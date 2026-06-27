@@ -1,0 +1,66 @@
+name: Build all platforms
+
+on:
+  push:
+    branches: [main, master]
+    tags: ["v*"]
+  workflow_dispatch:
+
+concurrency:
+  group: build-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install tk + pytest
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-tk
+          python -m pip install pytest
+
+      - name: pytest
+        run: python -m pytest tests/ -q
+
+  build:
+    name: ${{ matrix.platform }}
+    needs: test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform: windows
+          - os: macos-latest
+            platform: macos
+          - os: ubuntu-latest
+            platform: linux
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install tk (Linux)
+        if: matrix.platform == 'linux'
+        run: sudo apt-get update && sudo apt-get install -y python3-tk
+
+      - name: Build
+        run: python build.py --platform ${{ matrix.platform }} --no-bump
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: VideoBuilder-${{ matrix.platform }}-${{ github.sha }}
+          path: dist/
+          if-no-files-found: error
