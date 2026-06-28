@@ -23,6 +23,7 @@ from videobuilder.core.create_srt import (
     _groq_skip_segment,
     _groq_collect_words,
     _groq_text_is_hallucination,
+    _find_cue_timeline_gaps,
     _groq_filter_cues,
     _groq_prompt_from_cues,
     _groq_trim_prompt,
@@ -635,3 +636,29 @@ def test_check_whisper_model_cached(tmp_path, monkeypatch):
     assert status["ok"] is True
     assert status["model_cached"] is True
     assert "đã có trên máy" in status["message"]
+
+
+def test_find_cue_timeline_gaps_detects_short_srt_hole():
+    cues = [
+        (50.883, 53.440, "không có thuốc sát trùng"),
+        (70.649, 84.217, "Mùi trong gió"),
+    ]
+    gaps = _find_cue_timeline_gaps(cues, audio_duration=90.0)
+    hole = next((g for g in gaps if g[0] == pytest.approx(53.440)), None)
+    assert hole is not None
+    assert hole[1] == pytest.approx(70.649)
+
+
+def test_groq_relaxed_filter_keeps_sparse_real_speech():
+    text = "Một hai ba bốn năm sáu."
+    assert _groq_text_is_hallucination(text, duration=17.0, strict=True)
+    assert not _groq_text_is_hallucination(text, duration=17.0, strict=False)
+    seg = {
+        "start": 53.0,
+        "end": 70.0,
+        "text": text,
+        "no_speech_prob": 0.1,
+    }
+    assert _groq_skip_segment(seg, strict=True)
+    assert not _groq_skip_segment(seg, strict=False)
+

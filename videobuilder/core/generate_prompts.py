@@ -105,6 +105,15 @@ class TranscriptSegment:
 
 
 @dataclass
+class TranscriptIssue:
+    kind: str
+    cue_index: int
+    at_sec: float
+    detail: str
+    gap_sec: float = 0.0
+
+
+@dataclass
 class VisualBeat:
     start: float
     end: float
@@ -191,6 +200,129 @@ def segments_from_cues(cues: list[tuple[float, float, str]]) -> list[TranscriptS
             continue
         out.append(TranscriptSegment(float(start), float(end), text))
     return out
+
+
+def _srt_hole_warn_sec(at_sec: float) -> float:
+    """Ngưỡng im lặng SRT coi là lỗi — phải sửa transcript trước khi gọi LLM beat."""
+    if at_sec < OPENING_DENSE_SEC:
+        return MAX_GAP_OPENING_SEC
+    return MAX_GAP_BODY_SEC
+
+
+def audit_transcript_segments(
+    segments: list[TranscriptSegment],
+    *,
+    audio_duration: float | None = None,
+) -> list[TranscriptIssue]:
+    """Phát hiện hole, chồng lấn, cue rỗng — không sửa tự động."""
+    issues: list[TranscriptIssue] = []
+    if not segments:
+        issues.append(
+            TranscriptIssue("empty", -1, 0.0, "Transcript rỗng — không có cue có lời.")
+        )
+        return issues
+
+    prev: TranscriptSegment | None = None
+    for i, seg in enumerate(segments):
+        if not seg.text.strip():
+            issues.append(
+                TranscriptIssue(
+                    "empty_text",
+                    i,
+                    seg.start,
+                    f"Cue {i + 1} ({seg.start:.2f}s): không có lời.",
+                )
+            )
+        if seg.end <= seg.start + 0.02:
+            issues.append(
+                TranscriptIssue(
+                    "invalid_time",
+                    i,
+                    seg.start,
+                    f"Cue {i + 1}: end ≤ start ({seg.start:.2f}–{seg.end:.2f}s).",
+                )
+            )
+        if prev is not None:
+            gap = _segment_gap_sec(prev, seg)
+            overlap = prev.end - seg.start
+            if overlap > 0.05:
+                issues.append(
+                    TranscriptIssue(
+                        "overlap",
+                        i,
+                        seg.start,
+                        f"Cue {i} và {i + 1} chồng {overlap:.2f}s.",
+                        gap_sec=-overlap,
+                    )
+                )
+            elif gap > _srt_hole_warn_sec(prev.end):
+                issues.append(
+                    TranscriptIssue(
+                        "gap",
+                        i - 1,
+                        prev.end,
+                        (
+                            f"Thiếu transcript {prev.end:.2f}s → {seg.start:.2f}s "
+                            f"(im lặng {gap:.1f}s, cue {i}→{i + 1})."
+                        ),
+                        gap_sec=gap,
+                    )
+                )
+        prev = seg
+
+    if audio_duration is not None and segments:
+        tail = float(audio_duration) - segments[-1].end
+        if tail > _srt_hole_warn_sec(segments[-1].end):
+            issues.append(
+                TranscriptIssue(
+                    "tail_gap",
+                    len(segments) - 1,
+                    segments[-1].end,
+                    (
+                        f"Audio còn {tail:.1f}s sau cue cuối "
+                        f"({segments[-1].end:.2f}s → {audio_duration:.2f}s)."
+                    ),
+                    gap_sec=tail,
+                )
+            )
+
+    return issues
+
+
+_BLOCKING_TRANSCRIPT_ISSUES = frozenset(
+    {"empty", "invalid_time", "overlap", "gap", "tail_gap"}
+)
+
+
+def validate_transcript_for_prompts(
+    segments: list[TranscriptSegment],
+    *,
+    audio_duration: float | None = None,
+    log_callback=None,
+) -> list[TranscriptIssue]:
+    """Gate trước LLM visual beat — SRT lỗi thì dừng, không đoán nội dung thiếu."""
+    issues = audit_transcript_segments(segments, audio_duration=audio_duration)
+    blocking = [i for i in issues if i.kind in _BLOCKING_TRANSCRIPT_ISSUES]
+    if blocking:
+        lines = [
+            "SRT/transcript chưa sẵn sàng tạo prompt ảnh — sửa STT hoặc SRT trước:",
+            *(f"  • {item.detail}" for item in blocking[:10]),
+        ]
+        if len(blocking) > 10:
+            lines.append(f"  • ... và {len(blocking) - 10} vấn đề khác")
+        lines.append(
+            "Gợi ý: tạo lại SRT (Whisper), hoặc chèn cue thủ công cho đoạn thiếu."
+        )
+        msg = "\n".join(lines)
+        if log_callback:
+            for line in lines:
+                log_callback(line, "error")
+        raise GeneratePromptsError(msg)
+
+    for item in issues:
+        if item.kind == "empty_text" and log_callback:
+            log_callback(item.detail, "warn")
+    return issues
 
 
 def parse_prompt_timecode_token(token: str) -> float:
@@ -390,51 +522,52 @@ def _snap_beat_times_to_segments(
     return nearest.start, nearest.end
 
 
-def _beat_overlap_sec(beat: VisualBeat, seg: TranscriptSegment) -> float:
-    return max(0.0, min(beat.end, seg.end) - max(beat.start, seg.start))
+def _segment_gap_sec(prev: TranscriptSegment, nxt: TranscriptSegment) -> float:
+    """Khoảng im lặng giữa hai cue SRT liên tiếp (giây)."""
+    return max(0.0, nxt.start - prev.end)
 
 
-def _assign_segment_to_beat_index(
-    seg: TranscriptSegment,
-    beats: list[VisualBeat],
-) -> int:
-    if not beats:
-        return 0
-    best_i = 0
-    best_overlap = -1.0
-    for i, beat in enumerate(beats):
-        overlap = _beat_overlap_sec(beat, seg)
-        if overlap > best_overlap:
-            best_overlap = overlap
-            best_i = i
-    if best_overlap > 0.05:
-        return best_i
-    seg_mid = (seg.start + seg.end) / 2.0
-    best_i = 0
-    best_dist = float("inf")
-    for i, beat in enumerate(beats):
-        beat_mid = (beat.start + beat.end) / 2.0
-        dist = abs(seg_mid - beat_mid)
-        if dist < best_dist:
-            best_dist = dist
-            best_i = i
-    return best_i
+def _max_srt_cue_merge_gap(at_sec: float) -> float:
+    """Im lặng tối đa giữa hai cue vẫn gộp một beat — suy từ nhịp opening/body chung."""
+    if at_sec < OPENING_DENSE_SEC:
+        return min(TARGET_BEAT_SPAN_OPENING_SEC * 0.4, MAX_GAP_OPENING_SEC * 0.28)
+    return min(TARGET_BEAT_SPAN_BODY_SEC * 0.4, MAX_GAP_BODY_SEC * 0.28)
 
 
-def _split_segment_subgroups(
-    segs: list[TranscriptSegment],
-    max_span: float,
+def _beat_start_for_subgroup(seg_t0: float, timeline_cursor: float) -> float:
+    """Neo beat theo SRT: liền cue thì nối timeline; hole lớn thì bắt đầu đúng cue."""
+    if timeline_cursor <= 0.02:
+        return seg_t0
+    gap = max(0.0, seg_t0 - timeline_cursor)
+    if gap > _max_srt_cue_merge_gap(timeline_cursor):
+        return seg_t0
+    return timeline_cursor
+
+
+def _group_segments_for_beats(
+    segments: list[TranscriptSegment],
     *,
-    max_segs: int = 3,
+    loose_span: bool = False,
 ) -> list[list[TranscriptSegment]]:
-    if not segs:
+    """Gom cue SRT liên tiếp thành nhóm beat — dùng chung mọi pipeline."""
+    if not segments:
         return []
     groups: list[list[TranscriptSegment]] = []
-    current = [segs[0]]
-    for seg in segs[1:]:
-        gap = seg.start - current[-1].end
+    current = [segments[0]]
+    for seg in segments[1:]:
+        at = current[0].start
+        if loose_span:
+            in_opening = at < OPENING_DENSE_SEC
+            max_span = (
+                TARGET_BEAT_SPAN_OPENING_SEC * 2.2
+                if in_opening else TARGET_BEAT_SPAN_BODY_SEC * 1.6
+            )
+            max_segs = 2 if in_opening else 3
+        else:
+            max_span, max_segs = _pacing_limits_for_time(at)
+        gap = _segment_gap_sec(current[-1], seg)
         span = seg.end - current[0].start
-        if gap > 1.2 or span > max_span or len(current) >= max_segs:
+        if gap > _max_srt_cue_merge_gap(at) or span > max_span or len(current) >= max_segs:
             groups.append(current)
             current = [seg]
         else:
@@ -442,6 +575,33 @@ def _split_segment_subgroups(
     if current:
         groups.append(current)
     return groups
+
+
+def _pacing_limits_for_time(t: float) -> tuple[float, int]:
+    """Nhịp 10–30s nhanh; sau 30s ~5–8s/beat — theo timestamp cue, không theo hook_end."""
+    if t < OPENING_DENSE_SEC:
+        return TARGET_BEAT_SPAN_OPENING_SEC * 1.5, 2
+    return TARGET_BEAT_SPAN_BODY_SEC * 1.4, 3
+
+
+def _best_llm_beat_for_window(
+    beats: list[VisualBeat],
+    start: float,
+    end: float,
+) -> VisualBeat | None:
+    if not beats:
+        return None
+    best: VisualBeat | None = None
+    best_overlap = -1.0
+    for beat in beats:
+        overlap = max(0.0, min(beat.end, end) - max(beat.start, start))
+        if overlap > best_overlap:
+            best_overlap = overlap
+            best = beat
+    if best and best_overlap > 0.05:
+        return best
+    mid = (start + end) / 2.0
+    return min(beats, key=lambda b: abs((b.start + b.end) / 2.0 - mid))
 
 
 def _visual_for_resynced_beat(beat: VisualBeat, new_quote: str) -> str:
@@ -495,44 +655,27 @@ def _realign_body_beats_to_segments(
     segments: list[TranscriptSegment],
     hook_end: float,
 ) -> list[VisualBeat]:
-    """Gán mỗi cue SRT vào beat LLM gần nhất; timeline liền mạch, quote/visual khớp audio."""
+    """Dựng body từ danh sách cue SRT + metadata LLM — áp dụng mọi project."""
     post_segs = _segments_after_hook(segments, hook_end)
     if not post_segs:
         return []
 
     body_sorted = sorted(body, key=lambda b: b.start)
-    if not body_sorted:
-        groups = _group_uncovered_segments(post_segs, [])
-        body_sorted = [_synthesize_beat_from_segment_group(g) for g in groups]
-
-    seg_groups: list[list[TranscriptSegment]] = [[] for _ in body_sorted]
-    for seg in post_segs:
-        seg_groups[_assign_segment_to_beat_index(seg, body_sorted)].append(seg)
-
-    chunks: list[tuple[VisualBeat, list[TranscriptSegment]]] = []
-    in_opening = hook_end < OPENING_DENSE_SEC
-    max_span = (
-        TARGET_BEAT_SPAN_OPENING_SEC * 1.5
-        if in_opening else TARGET_BEAT_SPAN_BODY_SEC * 1.4
-    )
-    max_segs = 2 if in_opening else 3
-    for beat, segs in zip(body_sorted, seg_groups):
-        if not segs:
-            continue
-        for subgroup in _split_segment_subgroups(segs, max_span, max_segs=max_segs):
-            chunks.append((beat, subgroup))
-
-    if not chunks:
-        groups = _group_uncovered_segments(post_segs, [])
-        chunks = [(_synthesize_beat_from_segment_group(g), g) for g in groups]
+    subgroups = _group_segments_for_beats(post_segs)
+    if not subgroups:
+        return []
 
     realigned: list[VisualBeat] = []
     cursor = hook_end
-    for beat, segs in chunks:
-        start = cursor
-        end = max(segs[-1].end, start + MIN_BEAT_SPAN_SEC)
-        quote = merge_segment_texts(segs, segs[0].start, segs[-1].end)
-        synced = _resync_beat_quote_and_visual(beat, segments, start, end)
+    for segs in subgroups:
+        seg_t0, seg_t1 = segs[0].start, segs[-1].end
+        start = _beat_start_for_subgroup(seg_t0, cursor)
+        end = max(seg_t1, start + MIN_BEAT_SPAN_SEC)
+        quote = merge_segment_texts(segs, seg_t0, seg_t1)
+        src = _best_llm_beat_for_window(body_sorted, seg_t0, seg_t1)
+        if src is None:
+            src = _synthesize_beat_from_segment_group(segs)
+        synced = _resync_beat_quote_and_visual(src, segments, start, end)
         realigned.append(VisualBeat(
             start=start,
             end=end,
@@ -541,7 +684,7 @@ def _realign_body_beats_to_segments(
             scene_intent=synced.scene_intent,
             camera=synced.camera,
             background=synced.background,
-            visual=_visual_for_resynced_beat(beat, quote or synced.audio_quote),
+            visual=_visual_for_resynced_beat(src, quote or synced.audio_quote),
             labels=synced.labels,
             style=synced.style,
             is_hook=False,
@@ -664,6 +807,8 @@ def _build_visual_beat_system_prompt() -> str:
         "- visual mô tả CỤ THỂ hành động/bối cảnh cho ĐÚNG audio_quote trong start_sec–end_sec; "
         "không mô tả cảnh khác thời điểm.\n"
         "- start_sec/end_sec khớp timeline; beats sau hook_chain bắt đầu ≥ hook_chain[-1].end_sec.\n"
+        "- KHÔNG kéo một beat qua khoảng im lặng SRT lớn hơn ngưỡng merge cue "
+        "(xem pacing_hints / nhịp opening vs body).\n"
         "- Prompt 001–003 LUÔN là hook_chain (2–3 phần tử).\n"
         "- Trả JSON thuần: { hook_chain: [...], beats: [...] }, không markdown.\n"
         "- Vẫn chấp nhận legacy { hook: {...} } — parser sẽ tách thành chuỗi 2–3.\n"
@@ -760,6 +905,11 @@ def _chunk_pacing_hints(
         round(chunk_dur / max(MIN_BEAT_SPAN_SEC, avg_span * 0.6)),
     )
     hints["max_uncovered_gap_sec"] = max_gap
+    hints["max_srt_cue_merge_gap_sec"] = round(_max_srt_cue_merge_gap(chunk_start), 2)
+    hints["srt_hole_rule"] = (
+        "Không gộp beat qua khoảng im lặng SRT > max_srt_cue_merge_gap_sec; "
+        "beat mới bắt đầu đúng start_sec cue kế."
+    )
     hints["coverage"] = "Mọi segment trong chunk phải thuộc ít nhất một beat."
     hints["video_total_beats_min"] = full["total_beats_min"]
     hints["video_total_beats_max"] = full["total_beats_max"]
@@ -1133,22 +1283,7 @@ def _group_uncovered_segments(
     if not uncovered:
         return []
 
-    groups: list[list[TranscriptSegment]] = []
-    current = [uncovered[0]]
-    for seg in uncovered[1:]:
-        gap = seg.start - current[-1].end
-        span = seg.end - current[0].start
-        in_opening = current[0].start < OPENING_DENSE_SEC
-        max_span = TARGET_BEAT_SPAN_OPENING_SEC * 2.2 if in_opening else TARGET_BEAT_SPAN_BODY_SEC * 1.6
-        max_segs = 2 if in_opening else 3
-        if gap > 1.2 or span > max_span or len(current) >= max_segs:
-            groups.append(current)
-            current = [seg]
-        else:
-            current.append(seg)
-    if current:
-        groups.append(current)
-    return groups
+    return _group_segments_for_beats(uncovered, loose_span=True)
 
 
 def fill_timeline_gaps(
@@ -2020,8 +2155,16 @@ def generate_image_prompts_from_segments(
     output: Path,
     *,
     api_key: str | None = None,
+    audio_duration: float | None = None,
+    skip_transcript_audit: bool = False,
     log_callback=None,
 ) -> Path:
+    if not skip_transcript_audit:
+        validate_transcript_for_prompts(
+            segments,
+            audio_duration=audio_duration,
+            log_callback=log_callback,
+        )
     beats = call_groq_visual_beats(
         segments,
         api_key=api_key,

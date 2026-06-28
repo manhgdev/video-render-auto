@@ -89,6 +89,10 @@ GROQ_PROMPT_ECHO_MARKERS = (
     "phụ đề tiếng việt",
     "có dấu đầy đủ",
 )
+# Ngưỡng hole timeline — khớp generate_prompts (tránh import vòng)
+_SRT_OPENING_DENSE_SEC = 30.0
+_SRT_GAP_OPENING_SEC = 4.5
+_SRT_GAP_BODY_SEC = 7.0
 WHISPER_MODEL_INFO = {
     "tiny": ("~75 MB", "Nhanh nhất, độ chính xác thấp"),
     "base": ("~145 MB", "Nhanh, phù hợp audio rõ"),
@@ -1471,7 +1475,18 @@ def _groq_fold_text(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", text)
 
 
-def _groq_text_is_hallucination(text: str, *, duration: float = 0.0) -> bool:
+def _srt_gap_warn_sec(at_sec: float) -> float:
+    if at_sec < _SRT_OPENING_DENSE_SEC:
+        return _SRT_GAP_OPENING_SEC
+    return _SRT_GAP_BODY_SEC
+
+
+def _groq_text_is_hallucination(
+    text: str,
+    *,
+    duration: float = 0.0,
+    strict: bool = True,
+) -> bool:
     """Phát hiện ảo giác Whisper: echo prompt, nhạc nền, chữ vô nghĩa."""
     compact = re.sub(r"\s+", " ", (text or "").strip())
     if not compact:
@@ -1482,6 +1497,8 @@ def _groq_text_is_hallucination(text: str, *, duration: float = 0.0) -> bool:
             return True
     if "ndung" in folded and "nhi" in folded and len(folded) < 90:
         return True
+    if not strict:
+        return False
 
     words = compact.split()
     word_count = len(words)
@@ -1534,11 +1551,13 @@ def _groq_segment_text_duration(seg) -> tuple[str, float]:
     return text, max(end - start, 0.0)
 
 
-def _groq_skip_segment(seg) -> bool:
+def _groq_skip_segment(seg, *, strict: bool = True) -> bool:
     """Bỏ segment Whisper hay ảo giác trên nhạc nền / không có lời."""
     text, duration = _groq_segment_text_duration(seg)
-    if _groq_text_is_hallucination(text, duration=duration):
+    if _groq_text_is_hallucination(text, duration=duration, strict=strict):
         return True
+    if not strict:
+        return False
     if isinstance(seg, dict):
         nsp = seg.get("no_speech_prob")
         cr = seg.get("compression_ratio")
@@ -1561,10 +1580,14 @@ def _groq_skip_segment(seg) -> bool:
 
 def _groq_filter_cues(
     cues: list[tuple[float, float, str]],
+    *,
+    strict: bool = True,
 ) -> list[tuple[float, float, str]]:
     out: list[tuple[float, float, str]] = []
     for start, end, text in cues:
-        if _groq_text_is_hallucination(text, duration=max(end - start, 0.0)):
+        if _groq_text_is_hallucination(
+            text, duration=max(end - start, 0.0), strict=strict,
+        ):
             continue
         out.append((start, end, text))
     return out
@@ -1593,7 +1616,12 @@ def _groq_seg_words(seg, chunk_offset: float) -> list[_GroqWord]:
     return out
 
 
-def _groq_collect_words(result, offset: float = 0.0) -> list[_GroqWord]:
+def _groq_collect_words(
+    result,
+    offset: float = 0.0,
+    *,
+    strict: bool = True,
+) -> list[_GroqWord]:
     words: list[_GroqWord] = []
     raw_words = getattr(result, "words", None)
     if raw_words is None and isinstance(result, dict):
@@ -1616,10 +1644,74 @@ def _groq_collect_words(result, offset: float = 0.0) -> list[_GroqWord]:
     if segments is None and isinstance(result, dict):
         segments = result.get("segments")
     for seg in segments or []:
-        if _groq_skip_segment(seg):
+        if _groq_skip_segment(seg, strict=strict):
             continue
         words.extend(_groq_seg_words(seg, offset))
     return words
+
+
+def _find_cue_timeline_gaps(
+    cues: list[tuple[float, float, str]],
+    audio_duration: float,
+) -> list[tuple[float, float]]:
+    """Đoạn audio không có cue — thường do STT bỏ sót hoặc lọc ảo giác quá gắt."""
+    if audio_duration <= 0:
+        return []
+    sorted_cues = sorted(cues, key=lambda c: c[0])
+    gaps: list[tuple[float, float]] = []
+    if not sorted_cues:
+        if audio_duration > _srt_gap_warn_sec(0.0):
+            return [(0.0, audio_duration)]
+        return gaps
+
+    if sorted_cues[0][0] > _srt_gap_warn_sec(0.0):
+        gaps.append((0.0, sorted_cues[0][0]))
+
+    for i in range(1, len(sorted_cues)):
+        prev_end = sorted_cues[i - 1][1]
+        next_start = sorted_cues[i][0]
+        if next_start - prev_end > _srt_gap_warn_sec(prev_end):
+            gaps.append((prev_end, next_start))
+
+    tail = audio_duration - sorted_cues[-1][1]
+    if tail > _srt_gap_warn_sec(sorted_cues[-1][1]):
+        gaps.append((sorted_cues[-1][1], audio_duration))
+    return gaps
+
+
+def _merge_cues_timeline(
+    *cue_lists: list[tuple[float, float, str]],
+) -> list[tuple[float, float, str]]:
+    merged: list[tuple[float, float, str]] = []
+    for part in cue_lists:
+        merged.extend(part)
+    merged.sort(key=lambda c: (c[0], c[1]))
+    return merged
+
+
+def _warn_srt_timeline_gaps(
+    cues: list[tuple[float, float, str]],
+    audio_duration: float,
+    *,
+    log_callback=None,
+) -> list[tuple[float, float]]:
+    gaps = _find_cue_timeline_gaps(cues, audio_duration)
+    for gap_start, gap_end in gaps:
+        _log(
+            log_callback,
+            (
+                f"SRT thiếu transcript {gap_start:.2f}s → {gap_end:.2f}s "
+                f"(im lặng {gap_end - gap_start:.1f}s)."
+            ),
+            "warn",
+        )
+    if gaps:
+        _log(
+            log_callback,
+            "SRT chưa phủ hết audio — kiểm tra STT hoặc chèn cue thủ công.",
+            "warn",
+        )
+    return gaps
 
 
 def _groq_split_long_segment(
@@ -1640,7 +1732,12 @@ def _groq_split_long_segment(
     )
 
 
-def _groq_response_to_cues(result, offset: float = 0.0) -> list[tuple[float, float, str]]:
+def _groq_response_to_cues(
+    result,
+    offset: float = 0.0,
+    *,
+    strict: bool = True,
+) -> list[tuple[float, float, str]]:
     segments = getattr(result, "segments", None)
     if segments is None and isinstance(result, dict):
         segments = result.get("segments")
@@ -1649,13 +1746,13 @@ def _groq_response_to_cues(result, offset: float = 0.0) -> list[tuple[float, flo
         if text is None and isinstance(result, dict):
             text = result.get("text")
         text = (text or "").strip()
-        if text and not _groq_text_is_hallucination(text):
+        if text and not _groq_text_is_hallucination(text, strict=strict):
             return [(offset, offset + 0.05, text)]
         return []
 
     cues: list[tuple[float, float, str]] = []
     for seg in segments:
-        if _groq_skip_segment(seg):
+        if _groq_skip_segment(seg, strict=strict):
             continue
         if isinstance(seg, dict):
             start = float(seg.get("start", 0))
@@ -1800,6 +1897,7 @@ def _groq_transcribe_chunk(
     *,
     prompt_tail: str = "",
     log_callback=None,
+    strict: bool = True,
 ):
     chain = groq_whisper_model_chain(language)
 
@@ -1865,8 +1963,11 @@ def _groq_transcribe_chunk(
         if groq_whisper_active_model(language) != model and log_callback:
             _log(log_callback, f"Groq STT: dùng {model}", "info")
         set_active_whisper_model(model, language=language)
-        cues = _groq_filter_cues(_groq_response_to_cues(result, offset))
-        words = _groq_collect_words(result, offset)
+        cues = _groq_filter_cues(
+            _groq_response_to_cues(result, offset, strict=strict),
+            strict=strict,
+        )
+        words = _groq_collect_words(result, offset, strict=strict)
         return cues, words
 
     raise GroqRateLimitError(
@@ -1874,6 +1975,82 @@ def _groq_transcribe_chunk(
         + ", ".join(groq_whisper_model_chain(language))
         + (f". Chi tiết: {last_err}" if last_err else "")
     ) from last_err
+
+
+def _groq_recover_missing_cues(
+    client,
+    audio_path: Path,
+    cues: list[tuple[float, float, str]],
+    *,
+    language: str,
+    audio_duration: float,
+    process_controller: ProcessController | None,
+    log_callback=None,
+) -> tuple[list[tuple[float, float, str]], list[_GroqWord]]:
+    """Transcribe lại đoạn STT thiếu — lần đầu dùng lọc ảo giác gắt có thể bỏ sót lời thật."""
+    gaps = _find_cue_timeline_gaps(cues, audio_duration)
+    if not gaps:
+        return cues, []
+
+    recovered: list[tuple[float, float, str]] = []
+    extra_words: list[_GroqWord] = []
+    temps: list[Path] = []
+    sorted_cues = sorted(cues, key=lambda c: c[0])
+
+    try:
+        for gap_start, gap_end in gaps:
+            gap_dur = gap_end - gap_start
+            if gap_dur < 1.0:
+                continue
+            _log(
+                log_callback,
+                (
+                    f"STT thiếu {gap_start:.1f}s→{gap_end:.1f}s ({gap_dur:.1f}s) "
+                    "— transcribe lại với lọc nhẹ hơn..."
+                ),
+                "warn",
+            )
+            fd, tmp = tempfile.mkstemp(suffix=".flac")
+            os.close(fd)
+            chunk_path = Path(tmp)
+            temps.append(chunk_path)
+            _ffmpeg_to_flac_mono16k(
+                audio_path,
+                chunk_path,
+                start=gap_start,
+                duration=gap_dur,
+                process_controller=process_controller,
+            )
+            prior = [c for c in sorted_cues if c[1] <= gap_start + 0.08]
+            prompt_tail = _groq_prompt_from_cues(prior[-GROQ_PROMPT_MAX_CUES:] if prior else sorted_cues[:3])
+            gap_cues, gap_words = _groq_transcribe_chunk(
+                client,
+                chunk_path,
+                language,
+                gap_start,
+                process_controller,
+                prompt_tail=prompt_tail,
+                log_callback=log_callback,
+                strict=False,
+            )
+            gap_cues = _groq_filter_cues(gap_cues, strict=True)
+            if gap_cues:
+                recovered.extend(gap_cues)
+                extra_words.extend(gap_words)
+                _log(log_callback, f"  → bổ sung {len(gap_cues)} cue", "info")
+            else:
+                _log(
+                    log_callback,
+                    "  → vẫn không có lời (im lặng thật hoặc cần sửa SRT thủ công)",
+                    "warn",
+                )
+    finally:
+        for path in temps:
+            path.unlink(missing_ok=True)
+
+    if not recovered:
+        return cues, []
+    return _merge_cues_timeline(cues, recovered), extra_words
 
 
 def _transcribe_with_groq(
@@ -1962,6 +2139,29 @@ def _transcribe_with_groq(
     filtered = _groq_filter_cues(all_cues)
     if not filtered:
         raise CreateSrtError("Groq không nhận dạng được lời thoại trong audio.")
+
+    try:
+        audio_duration = get_media_duration(audio_path)
+    except Exception:
+        audio_duration = 0.0
+    if max_seconds is not None:
+        if audio_duration > 0:
+            audio_duration = min(audio_duration, max_seconds)
+        else:
+            audio_duration = max_seconds
+    if audio_duration > 0:
+        filtered, gap_words = _groq_recover_missing_cues(
+            client,
+            audio_path,
+            filtered,
+            language=language,
+            audio_duration=audio_duration,
+            process_controller=process_controller,
+            log_callback=log_callback,
+        )
+        all_words.extend(gap_words)
+        _warn_srt_timeline_gaps(filtered, audio_duration, log_callback=log_callback)
+
     if not refine:
         report(95, f"Groq xong — {len(filtered)} segment")
         return filtered, all_words
@@ -2328,6 +2528,15 @@ def create_srt(
     finally:
         if clip_path and clip_path.is_file():
             clip_path.unlink(missing_ok=True)
+
+    try:
+        audio_duration = get_media_duration(audio_path)
+        if max_seconds is not None and audio_duration > 0:
+            audio_duration = min(audio_duration, max_seconds)
+    except Exception:
+        audio_duration = max_seconds or 0.0
+    if audio_duration > 0:
+        _warn_srt_timeline_gaps(cues, audio_duration, log_callback=log_callback)
 
     write_srt_from_cues(output_path, cues)
     _log(log_callback, f"Xong: {len(cues)} cue → {output_path}", "success")

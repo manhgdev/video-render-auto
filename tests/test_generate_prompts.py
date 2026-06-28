@@ -564,8 +564,8 @@ def test_reanchor_hook_chain_closes_llm_gaps():
     assert fixed[2].end <= 10.0 + 0.1
 
 
-def test_stitch_beats_contiguous_no_gaps():
-    """Beat kế tiếp phải bắt đầu đúng lúc beat trước kết thúc."""
+def test_finalize_respects_srt_gap_between_cues():
+    """Cue SRT cách nhau >1.2s — beat sau bắt đầu đúng cue, không kéo ảnh qua."""
     from videobuilder.core.generate_prompts import (
         TranscriptSegment,
         VisualBeat,
@@ -602,12 +602,13 @@ def test_stitch_beats_contiguous_no_gaps():
             "body", "Rộng", "Ngoài", "v4", DEFAULT_LABELS, DEFAULT_ART_STYLE,
         ),
     ]
-    stitched = finalize_timeline_coverage(beats, segments)
-    for i in range(len(stitched) - 1):
-        assert abs(stitched[i].end - stitched[i + 1].start) < 0.02, (
-            f"gap giữa beat {i} và {i + 1}: "
-            f"{stitched[i].end:.2f} → {stitched[i + 1].start:.2f}"
-        )
+    out = finalize_timeline_coverage(beats, segments)
+    body = [b for b in out if not b.is_hook]
+    four = next(b for b in body if "Bốn" in b.audio_quote)
+    five = next(b for b in body if "Năm" in b.audio_quote)
+    assert four.end <= 15.01
+    assert five.start >= 20.0 - 0.02
+    assert five.start - four.end > 4.0
 
 
 def test_finalize_preserves_hook_chain_not_merged_with_body():
@@ -695,8 +696,96 @@ def test_realign_body_matches_segments_not_stretched_llm_window():
     assert fixed[1].audio_quote == "Câu hai mươi."
     assert fixed[2].audio_quote == "Câu ba mươi."
     assert "sai hoàn toàn" not in " ".join(b.audio_quote for b in fixed)
-    for i in range(len(fixed) - 1):
-        assert abs(fixed[i].end - fixed[i + 1].start) < 0.02
+    assert fixed[1].start >= 20.0 - 0.02
+    assert fixed[2].start >= 30.0 - 0.02
+    assert fixed[0].end <= 14.01
+
+
+def test_large_srt_gap_splits_beats_not_one_long_image():
+    """Mọi project: hole SRT lớn → beat mới neo đúng cue, không kéo ảnh 20s."""
+    from videobuilder.core.generate_prompts import (
+        TranscriptSegment,
+        VisualBeat,
+        _realign_body_beats_to_segments,
+        DEFAULT_CHARACTER_STYLE,
+        DEFAULT_LABELS,
+        DEFAULT_ART_STYLE,
+    )
+
+    segments = [
+        TranscriptSegment(50.883, 53.440, "Cue A."),
+        TranscriptSegment(70.649, 73.568, "Cue B sau hole."),
+        TranscriptSegment(73.568, 75.514, "Cue C."),
+    ]
+    body = [
+        VisualBeat(
+            50.883, 53.440, "Cue A.", DEFAULT_CHARACTER_STYLE,
+            "cảnh", "Rộng", "Nền", "VIS_A",
+            DEFAULT_LABELS, DEFAULT_ART_STYLE,
+        ),
+        VisualBeat(
+            70.649, 73.568, "Cue B sau hole.",
+            DEFAULT_CHARACTER_STYLE, "cảnh", "Rộng", "Nền", "VIS_B",
+            DEFAULT_LABELS, DEFAULT_ART_STYLE,
+        ),
+    ]
+    fixed = _realign_body_beats_to_segments(body, segments, hook_end=10.32)
+    a = next(b for b in fixed if "Cue A" in b.audio_quote)
+    b = next(b for b in fixed if "Cue B" in b.audio_quote)
+    assert a.end <= 53.45
+    assert b.start >= 70.6
+    assert b.end - b.start < 8.0
+    assert b.start - a.end > 15.0
+    assert "VIS_B" in b.visual
+
+
+def test_max_srt_cue_merge_gap_derived_from_pacing():
+    from videobuilder.core.generate_prompts import (
+        OPENING_DENSE_SEC,
+        _max_srt_cue_merge_gap,
+    )
+
+    assert _max_srt_cue_merge_gap(0.0) < OPENING_DENSE_SEC
+    assert _max_srt_cue_merge_gap(50.0) < 17.0
+    assert _max_srt_cue_merge_gap(50.0) >= _max_srt_cue_merge_gap(5.0)
+
+
+def test_realign_after_30s_uses_segment_llm_not_early_beat():
+    """Cue sau 30s lấy visual LLM đúng cửa sổ — không dính beat 10s."""
+    from videobuilder.core.generate_prompts import (
+        TranscriptSegment,
+        VisualBeat,
+        _realign_body_beats_to_segments,
+        DEFAULT_CHARACTER_STYLE,
+        DEFAULT_LABELS,
+        DEFAULT_ART_STYLE,
+    )
+
+    segments = [
+        TranscriptSegment(10.0, 14.0, "Mười giây."),
+        TranscriptSegment(32.0, 36.0, "Ba mươi hai giây."),
+        TranscriptSegment(45.0, 49.0, "Bốn mươi lăm giây."),
+    ]
+    body = [
+        VisualBeat(
+            10.0, 14.0, "Mười giây.", DEFAULT_CHARACTER_STYLE,
+            "cảnh mười", "Cận", "Nền", "VISUAL_10S", DEFAULT_LABELS, DEFAULT_ART_STYLE,
+        ),
+        VisualBeat(
+            32.0, 36.0, "Ba mươi hai giây.", DEFAULT_CHARACTER_STYLE,
+            "cảnh 32", "Rộng", "Nền", "VISUAL_32S", DEFAULT_LABELS, DEFAULT_ART_STYLE,
+        ),
+        VisualBeat(
+            45.0, 49.0, "Bốn mươi lăm giây.", DEFAULT_CHARACTER_STYLE,
+            "cảnh 45", "Trung", "Nền", "VISUAL_45S", DEFAULT_LABELS, DEFAULT_ART_STYLE,
+        ),
+    ]
+    fixed = _realign_body_beats_to_segments(body, segments, hook_end=0.0)
+    quotes = [b.audio_quote for b in fixed]
+    visuals = [b.visual for b in fixed]
+    idx_32 = quotes.index("Ba mươi hai giây.")
+    assert "VISUAL_32S" in visuals[idx_32]
+    assert "VISUAL_10S" not in visuals[idx_32]
 
 
 def test_snap_beat_times_to_segments():
@@ -792,3 +881,74 @@ def test_normalize_beat_rejects_python_list_labels():
     assert line.startswith("001_[")
     assert "hook" in line.lower() or HOOK_TYPES[0] in line
     assert "Điểm nối chuyển cảnh:" in line
+
+
+class TestTranscriptAudit:
+    def test_detects_large_gap_like_short_srt(self):
+        from videobuilder.core.generate_prompts import audit_transcript_segments
+
+        segments = [
+            TranscriptSegment(50.883, 53.440, "không có thuốc sát trùng"),
+            TranscriptSegment(70.649, 84.217, "Mùi trong gió"),
+        ]
+        issues = audit_transcript_segments(segments)
+        gaps = [i for i in issues if i.kind == "gap"]
+        assert len(gaps) == 1
+        assert gaps[0].gap_sec == pytest.approx(17.209, abs=0.01)
+
+    def test_validate_blocks_prompt_generation_on_gap(self):
+        from videobuilder.core.generate_prompts import (
+            GeneratePromptsError,
+            validate_transcript_for_prompts,
+        )
+
+        segments = [
+            TranscriptSegment(0.0, 2.0, "Mở đầu"),
+            TranscriptSegment(12.0, 14.0, "Sau im lặng dài"),
+        ]
+        with pytest.raises(GeneratePromptsError, match="Thiếu transcript"):
+            validate_transcript_for_prompts(segments)
+
+    def test_clean_transcript_passes_audit(self):
+        from videobuilder.core.generate_prompts import validate_transcript_for_prompts
+
+        segments = [
+            TranscriptSegment(0.0, 2.0, "Mở đầu"),
+            TranscriptSegment(2.5, 5.0, "Tiếp theo"),
+        ]
+        assert validate_transcript_for_prompts(segments) == []
+
+    def test_generate_image_prompts_runs_audit(self, tmp_path: Path, monkeypatch):
+        from videobuilder.core.generate_prompts import (
+            GeneratePromptsError,
+            generate_image_prompts_from_segments,
+        )
+
+        segments = [
+            TranscriptSegment(0.0, 2.0, "OK"),
+            TranscriptSegment(15.0, 18.0, "Gap quá lớn"),
+        ]
+        with pytest.raises(GeneratePromptsError):
+            generate_image_prompts_from_segments(
+                segments,
+                tmp_path / "out.txt",
+                skip_transcript_audit=False,
+            )
+
+        called = {"n": 0}
+
+        def fake_llm(*_a, **_k):
+            called["n"] += 1
+            return []
+
+        monkeypatch.setattr(
+            "videobuilder.core.generate_prompts.call_groq_visual_beats",
+            fake_llm,
+        )
+        generate_image_prompts_from_segments(
+            segments[:1],
+            tmp_path / "ok.txt",
+            skip_transcript_audit=False,
+        )
+        assert called["n"] == 1
+

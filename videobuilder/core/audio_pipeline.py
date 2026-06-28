@@ -13,6 +13,7 @@ from videobuilder.core.create_srt import (
     DEFAULT_LANGUAGE,
     DEFAULT_SRT_SPLIT,
     _trim_cues,
+    _warn_srt_timeline_gaps,
     create_srt,
     groq_api_key,
     groq_client_available,
@@ -145,17 +146,30 @@ def run_audio_pipeline(
         if not srt_cues:
             raise CreateSrtError("Không tạo được cue SRT.")
 
+        srt_audio_duration: float | None = max_seconds
+        if srt_audio_duration is None:
+            try:
+                from videobuilder.core.pipeline import get_media_duration
+
+                srt_audio_duration = get_media_duration(audio_for_stt)
+            except Exception:
+                srt_audio_duration = None
+        if srt_audio_duration:
+            _warn_srt_timeline_gaps(srt_cues, srt_audio_duration, log_callback=log_callback)
+
         write_srt_from_cues(srt_path, srt_cues)
         _log(log_callback, f"SRT: {len(srt_cues)} cue → {srt_path.name}", "success")
         report(62, f"SRT xong — {len(srt_cues)} cue")
 
         out_prompts: Path | None = None
         if generate_prompts:
-            segments = segments_from_cues(raw_cues)
+            segments = segments_from_cues(srt_cues)
+            audio_duration: float | None = srt_audio_duration
             report(65, "Groq LLM phân tích visual beat...")
             out_prompts = generate_image_prompts_from_segments(
                 segments,
                 prompts_path,
+                audio_duration=audio_duration,
                 log_callback=log_callback,
             )
             report(95, f"Prompt ảnh: {out_prompts.name}")
@@ -175,6 +189,14 @@ def run_audio_pipeline(
             clip_path.unlink(missing_ok=True)
         if temp_audio and temp_audio.is_file():
             temp_audio.unlink(missing_ok=True)
+
+
+def _audio_path_for_srt(srt: Path) -> Path | None:
+    for ext in (".mp3", ".wav", ".m4a", ".flac", ".ogg", ".mp4", ".mkv", ".webm"):
+        candidate = srt.with_suffix(ext)
+        if candidate.is_file():
+            return candidate
+    return None
 
 
 def run_prompts_from_srt(
@@ -214,11 +236,22 @@ def run_prompts_from_srt(
     _log(log_callback, f"File tạo ảnh: {prompts_path.name}")
 
     segments = segments_from_cues(cues)
+    audio_duration: float | None = None
+    audio_guess = _audio_path_for_srt(srt)
+    if audio_guess is not None:
+        try:
+            from videobuilder.core.pipeline import get_media_duration
+
+            audio_duration = get_media_duration(audio_guess)
+        except Exception:
+            audio_duration = None
+
     report(15, "Groq LLM phân tích visual beat...")
     try:
         out = generate_image_prompts_from_segments(
             segments,
             prompts_path,
+            audio_duration=audio_duration,
             log_callback=log_callback,
         )
     except GeneratePromptsError as err:
