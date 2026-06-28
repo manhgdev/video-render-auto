@@ -16,7 +16,8 @@ def test_report_progress_monotonic():
     report_progress(cb, 10, "a")
     report_progress(cb, 5, "b")
     report_progress(cb, 20, "c")
-    assert seen == [10, 10, 20]
+    report_progress(cb, 100, "done")
+    assert seen == [10, 10, 20, 99.0]
 
 
 def test_short_render_status_collapses_prep():
@@ -27,6 +28,8 @@ def test_short_render_status_collapses_prep():
 def test_short_srt_status():
     assert short_srt_status("Đang nhận dạng giọng nói...") == "Nhận dạng giọng nói..."
     assert short_srt_status("Tải model Whisper (cuda)...") == "Tải model Whisper..."
+    assert short_srt_status("Groq nhận dạng (1/2)...") == "Groq nhận dạng..."
+    assert short_srt_status("Chuẩn bị audio cho Groq...") == "Chuẩn bị Groq..."
 
 
 def test_should_log_render_progress():

@@ -214,13 +214,53 @@ class ProjectTabMixin:
                 self._sync_duration_from_audio()
 
         def _pick_prompts(self):
-            path = filedialog.askopenfilename(
-                parent=self,
-                title="Chọn file prompt",
-                filetypes=[("Text", "*.txt"), ("Tất cả", "*.*")],
-            )
+            saved = self.prompts_var.get().strip()
+            if saved:
+                saved_path = Path(saved)
+                initialdir = saved_path.parent if saved_path.parent.exists() else default_output_folder()
+                initialfile = saved_path.name if saved_path.suffix else ""
+            else:
+                audio = self.audio_var.get().strip()
+                if audio and Path(audio).is_file():
+                    default_txt = Path(audio).with_suffix(".txt")
+                    initialdir = default_txt.parent
+                    initialfile = default_txt.name
+                else:
+                    initialdir = default_output_folder()
+                    initialfile = ""
+            if not initialdir.exists():
+                initialdir = default_output_folder()
+            dialog_kwargs = {
+                "parent": self,
+                "title": "Chọn file timeline (.txt)",
+                "filetypes": [("File tạo ảnh", "*.txt"), ("Tất cả", "*.*")],
+                "initialdir": str(initialdir),
+            }
+            if initialfile:
+                dialog_kwargs["initialfile"] = initialfile
+            path = filedialog.askopenfilename(**dialog_kwargs)
             if path:
                 self.prompts_var.set(path)
+                self._sync_prompts_display(from_output_var=True)
+
+        def _apply_prompts_name(self):
+            self._sync_prompts_display()
+
+        def _reset_prompts_path(self):
+            """Xóa timeline — không gán lại từ file audio."""
+            self.prompts_var.set("")
+            self.prompts_dir_var.set("")
+            self.prompts_name_var.set("")
+
+        def _sync_prompts_display(self, from_output_var=False):
+            self._sync_file_export_display(
+                self.prompts_var,
+                self.prompts_dir_var,
+                self.prompts_name_var,
+                ".txt",
+                from_output_var=from_output_var,
+                audio_path=self.audio_var.get().strip(),
+            )
 
         def _pick_watermark(self):
             path = filedialog.askopenfilename(
@@ -327,6 +367,13 @@ class ProjectTabMixin:
                 return
             self._show_srt_viewer(target)
 
+        def _open_prompts(self):
+            target = self.last_prompts_output or self.srt_prompts_output_var.get().strip()
+            if not target or not Path(target).is_file():
+                self._show_info("Chưa có file", "Chưa có file tạo ảnh (.txt).")
+                return
+            self._show_prompts_viewer(target)
+
         def _open_video(self):
             if self.last_output:
                 self._open_path(self.last_output)
@@ -336,6 +383,8 @@ class ProjectTabMixin:
         def _open_folder(self):
             if getattr(self, "_footer_mode", "render") == "srt":
                 target = self.last_srt_output or self.srt_output_var.get().strip()
+                if not target:
+                    target = self.last_prompts_output or self.srt_prompts_output_var.get().strip()
             else:
                 target = self.last_output or self.output_var.get().strip()
             if not target:
@@ -367,6 +416,10 @@ class ProjectTabMixin:
                 "subtitle_margin": self.subtitle_margin_var.get(),
                 "subtitle_outline": self.subtitle_outline_var.get(),
                 "preview": self.preview_var.get(),
+                "srt_groq_api_key": self.srt_groq_api_key_var.get(),
+                "srt_gemini_api_key": self.srt_gemini_api_key_var.get(),
+                "srt_prompts_output": self.srt_prompts_output_var.get(),
+                "srt_gen_prompts": self.srt_gen_prompts_var.get(),
                 "srt_audio": self.srt_audio_var.get(),
                 "srt_output": self.srt_output_var.get(),
                 "srt_model": self.srt_model_var.get(),
@@ -405,6 +458,10 @@ class ProjectTabMixin:
                 "subtitle_margin": self.subtitle_margin_var,
                 "subtitle_outline": self.subtitle_outline_var,
                 "preview": self.preview_var,
+                "srt_groq_api_key": self.srt_groq_api_key_var,
+                "srt_gemini_api_key": self.srt_gemini_api_key_var,
+                "srt_prompts_output": self.srt_prompts_output_var,
+                "srt_gen_prompts": self.srt_gen_prompts_var,
                 "srt_audio": self.srt_audio_var,
                 "srt_output": self.srt_output_var,
                 "srt_model": self.srt_model_var,
@@ -412,18 +469,24 @@ class ProjectTabMixin:
                 "srt_split": self.srt_split_var,
             }
             for key, var in mapping.items():
-                if key in data:
-                    if key == "strip_metadata" and isinstance(data[key], bool):
-                        var.set("Bật" if data[key] else "Tắt")
-                    elif key == "strip_metadata" and data[key] in STRIP_METADATA_UI:
-                        var.set(data[key])
-                    elif key == "srt_split":
-                        split_key = normalize_srt_split(str(data[key]))
-                        var.set(SRT_SPLIT_KEY_TO_LABEL.get(split_key, SRT_SPLIT_KEY_TO_LABEL["normal"]))
-                    else:
-                        var.set(data[key])
+                if key not in data:
+                    continue
+                if key == "strip_metadata" and isinstance(data[key], bool):
+                    var.set("Bật" if data[key] else "Tắt")
+                elif key == "strip_metadata" and data[key] in STRIP_METADATA_UI:
+                    var.set(data[key])
+                elif key == "srt_split":
+                    split_key = normalize_srt_split(str(data[key]))
+                    var.set(SRT_SPLIT_KEY_TO_LABEL.get(split_key, SRT_SPLIT_KEY_TO_LABEL["normal"]))
+                elif key == "srt_gen_prompts":
+                    self.srt_gen_prompts_var.set(bool(data[key]))
+                else:
+                    var.set(data[key])
             self._sync_output_display(from_output_var=True)
+            self._sync_prompts_display(from_output_var=True)
             self._sync_srt_output_display(from_output_var=True)
+            self._sync_srt_prompts_output_display(from_output_var=True)
+            self._apply_groq_api_key(silent=True)
 
         def _save_settings(self):
             try:

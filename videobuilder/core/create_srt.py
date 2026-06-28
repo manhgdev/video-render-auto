@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Audio → SRT (faster-whisper)."""
+"""Audio → SRT (Groq Whisper API, fallback faster-whisper local)."""
 
 from __future__ import annotations
 
@@ -11,9 +11,11 @@ import subprocess
 import sys
 import tempfile
 import threading
+import unicodedata
 from pathlib import Path
 
 from videobuilder.core.pipeline import ProcessController, RenderCancelled, get_media_duration, parse_srt_file, write_srt_from_cues
+from videobuilder.core.env_config import GROQ_API_KEY_ENV
 
 WHISPER_MODELS = ("tiny", "base", "small", "medium", "large-v3")
 DEFAULT_MODEL = "small"
@@ -59,6 +61,34 @@ SRT_SPLIT_PARAMS = {
     },
 }
 WHISPER_NUMPY_SPEC = "numpy<2"
+from videobuilder.core.groq_models import (
+    GROQ_WHISPER_LARGE,
+    GROQ_WHISPER_TURBO,
+    groq_whisper_active_model,
+    groq_whisper_chain_label,
+    groq_whisper_model_chain,
+    groq_whisper_primary_model,
+    groq_whisper_using_cached_model,
+    load_cached_groq_models,
+    set_active_whisper_model,
+)
+
+GROQ_WHISPER_MODEL = GROQ_WHISPER_TURBO
+GROQ_WHISPER_MODEL_VI = GROQ_WHISPER_LARGE
+GROQ_MAX_UPLOAD_BYTES = 25 * 1024 * 1024
+GROQ_CHUNK_SECONDS = 18 * 60
+GROQ_TRANSCRIBE_CHUNK_SECONDS = 8 * 60
+GROQ_PROMPT_API_CHAR_MAX = 896
+GROQ_PROMPT_MAX_CHARS = 840
+GROQ_PROMPT_MAX_TOKENS = 200
+GROQ_PROMPT_MAX_CUES = 10
+GROQ_MAX_SEGMENT_DURATION = 12.0
+GROQ_PROMPT_ECHO_MARKERS = (
+    "nội dung tự nhiên",
+    "câu hoàn chỉnh",
+    "phụ đề tiếng việt",
+    "có dấu đầy đủ",
+)
 WHISPER_MODEL_INFO = {
     "tiny": ("~75 MB", "Nhanh nhất, độ chính xác thấp"),
     "base": ("~145 MB", "Nhanh, phù hợp audio rõ"),
@@ -90,6 +120,11 @@ class CreateSrtError(Exception):
 
 
 class CreateSrtCancelled(CreateSrtError):
+    pass
+
+
+class GroqRateLimitError(CreateSrtError):
+    """Groq API vượt giới hạn — chuyển faster-whisper local."""
     pass
 
 
@@ -825,8 +860,96 @@ def whisper_runtime_device_label() -> str:
     return "GPU (CUDA)" if cuda_available() else "CPU"
 
 
-def check_whisper(model: str | None = None) -> dict:
-    """Trạng thái cài đặt faster-whisper (cho GUI)."""
+_groq_api_key_override: str | None = None
+
+
+def set_groq_api_key(key: str | None) -> None:
+    """Đặt API key Groq từ UI (ưu tiên hơn biến môi trường)."""
+    global _groq_api_key_override
+    text = (key or "").strip()
+    _groq_api_key_override = text or None
+
+
+def groq_api_key() -> str | None:
+    if _groq_api_key_override:
+        return _groq_api_key_override
+    key = os.environ.get(GROQ_API_KEY_ENV, "").strip()
+    return key or None
+
+
+def groq_client_available() -> bool:
+    try:
+        from groq import Groq  # noqa: F401
+
+        return True
+    except ImportError:
+        return False
+
+
+def _faster_whisper_import_ok() -> bool:
+    try:
+        from faster_whisper import WhisperModel  # noqa: F401
+
+        return True
+    except ImportError:
+        return False
+    except Exception:
+        return False
+
+
+def srt_packages_status() -> dict:
+    """Package groq + faster-whisper (không tải model)."""
+    numpy_msg = whisper_numpy_message()
+    groq_ok = groq_client_available()
+    whisper_ok = _faster_whisper_import_ok() if numpy_msg is None else False
+    missing: list[str] = []
+    if numpy_msg:
+        missing.append("numpy")
+    if not groq_ok:
+        missing.append("groq")
+    if not whisper_ok:
+        missing.append("faster-whisper")
+    return {
+        "groq_ok": groq_ok,
+        "whisper_ok": whisper_ok,
+        "numpy_ok": numpy_msg is None,
+        "numpy_message": numpy_msg,
+        "needs_install": bool(missing),
+        "missing": missing,
+    }
+
+
+def install_srt_packages(*, log_callback=None) -> None:
+    """Cài groq + faster-whisper + dotenv — gọi từ GUI."""
+    _log(log_callback, "Đang cài gói nhận dạng (Groq + Whisper)...")
+    cmd = [
+        sys.executable, "-m", "pip", "install",
+        "groq", WHISPER_NUMPY_SPEC, "faster-whisper",
+        "python-dotenv",
+    ]
+    try:
+        subprocess.check_call(cmd)
+    except subprocess.CalledProcessError as err:
+        raise CreateSrtError(f"Không cài được gói nhận dạng (mã {err.returncode}).") from err
+    _log(log_callback, "Đã cài gói nhận dạng.", "success")
+
+
+def is_groq_rate_limit(exc: BaseException) -> bool:
+    if type(exc).__name__ == "RateLimitError":
+        return True
+    msg = str(exc).lower()
+    return (
+        "429" in msg
+        or "rate limit" in msg
+        or "rate_limit" in msg
+        or "quota" in msg
+        or "insufficient" in msg
+        or "exceeded" in msg
+    )
+
+
+def _check_local_whisper(model: str | None = None) -> dict:
+    """Trạng thái faster-whisper local (cho GUI / fallback)."""
     numpy_msg = whisper_numpy_message()
     if numpy_msg:
         return {"ok": False, "message": numpy_msg, "model_cached": None}
@@ -835,14 +958,14 @@ def check_whisper(model: str | None = None) -> dict:
     except ImportError:
         return {
             "ok": False,
-            "message": "Chưa cài faster-whisper — bấm «Cài Whisper» để bắt đầu.",
+            "message": "Chưa cài Whisper — bấm «Cài đặt» trong tab Tạo SRT.",
             "model_cached": None,
         }
     except Exception as exc:
         numpy_msg = whisper_numpy_message()
         return {
             "ok": False,
-            "message": numpy_msg or f"Lỗi Whisper: {exc}",
+            "message": numpy_msg or f"Lỗi faster-whisper: {exc}",
             "model_cached": None,
         }
 
@@ -868,8 +991,73 @@ def check_whisper(model: str | None = None) -> dict:
         "model_cached": False,
         "device": device,
         "message": (
-            f"Model {model} chưa tải ({size}) — bấm «Cài đặt» để tải · {device}"
+            f"Model {model} chưa tải ({size}) — chỉ cần khi Groq giới hạn · {device}"
         ),
+    }
+
+
+def check_whisper(model: str | None = None, *, language: str = "") -> dict:
+    """Trạng thái nhận dạng SRT: Groq trước, faster-whisper fallback."""
+    local = _check_local_whisper(model)
+    pkg = srt_packages_status()
+    key = groq_api_key()
+    groq_lib = pkg["groq_ok"]
+    needs_install = pkg["needs_install"]
+
+    if key and groq_lib:
+        load_cached_groq_models()
+        groq_msg = f"Groq STT {groq_whisper_chain_label(language)} · free tier"
+        if local["ok"]:
+            message = f"{groq_msg} · Whisper {local['message']}"
+        else:
+            message = f"{groq_msg} · Whisper chưa sẵn sàng — {local['message']}"
+        return {
+            "ok": True,
+            "groq": True,
+            "local_ok": local["ok"],
+            "needs_install": needs_install,
+            "model_cached": local.get("model_cached"),
+            "device": local.get("device"),
+            "message": message,
+        }
+
+    if key and not groq_lib:
+        message = "Có API key Groq — cần cài gói nhận dạng"
+        if local["ok"]:
+            message = f"{message} · tạm dùng Whisper local"
+            return {
+                "ok": True,
+                "groq": False,
+                "local_ok": True,
+                "needs_install": True,
+                "model_cached": local.get("model_cached"),
+                "device": local.get("device"),
+                "message": message,
+            }
+        return {
+            "ok": False,
+            "groq": False,
+            "local_ok": False,
+            "needs_install": True,
+            "model_cached": local.get("model_cached"),
+            "message": message,
+        }
+
+    if local["ok"]:
+        local = dict(local)
+        local["message"] = f"Thiếu API key Groq — {local['message']}"
+        local["groq"] = False
+        local["local_ok"] = True
+        local["needs_install"] = needs_install
+        return local
+
+    return {
+        "ok": False,
+        "groq": False,
+        "local_ok": False,
+        "needs_install": True,
+        "model_cached": local.get("model_cached"),
+        "message": "Nhập API key Groq và bấm «Cài đặt» để cài gói nhận dạng.",
     }
 
 
@@ -886,8 +1074,7 @@ def whisper_numpy_message() -> str | None:
     major = numpy_major_version()
     if major is not None and major >= 2:
         return (
-            f"NumPy {major}.x không tương thích torch/Whisper — "
-            f'chạy: pip install "{WHISPER_NUMPY_SPEC}"'
+            f"NumPy {major}.x không tương thích — bấm «Cài đặt» trong tab Tạo SRT."
         )
     return None
 
@@ -900,8 +1087,8 @@ def ensure_whisper():
         from faster_whisper import WhisperModel  # noqa: F401
     except ImportError as exc:
         raise CreateSrtError(
-            "Chưa cài faster-whisper.\n"
-            "Chạy: pip install faster-whisper"
+            "Chưa cài gói Whisper.\n"
+            "Bấm «Cài đặt» trong tab Tạo SRT."
         ) from exc
     except Exception as exc:
         numpy_msg = whisper_numpy_message()
@@ -1111,6 +1298,29 @@ def _load_whisper_model(model: str, device: str, process_controller: ProcessCont
     return load()
 
 
+def _poll_ffmpeg_proc(
+    proc: subprocess.Popen,
+    process_controller: ProcessController | None,
+    *,
+    poll: float = 0.2,
+) -> None:
+    """Chờ FFmpeg xong; poll để hỗ trợ hủy/tạm dừng (timeout= poll là sleep, không phải giới hạn tổng)."""
+    while proc.poll() is None:
+        if process_controller:
+            process_controller.wait_if_paused()
+            if process_controller.cancelled:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                raise CreateSrtCancelled("Đã hủy tạo SRT")
+        try:
+            proc.wait(timeout=poll)
+        except subprocess.TimeoutExpired:
+            continue
+
+
 def _extract_audio_clip(
     audio_path: Path,
     seconds: float,
@@ -1155,17 +1365,7 @@ def _extract_audio_clip(
         )
         if process_controller:
             process_controller.attach(proc)
-        while proc.poll() is None:
-            if process_controller:
-                process_controller.wait_if_paused()
-                if process_controller.cancelled:
-                    proc.terminate()
-                    try:
-                        proc.wait(timeout=3)
-                    except subprocess.TimeoutExpired:
-                        proc.kill()
-                    raise CreateSrtCancelled("Đã hủy tạo SRT")
-            proc.wait(timeout=0.2)
+        _poll_ffmpeg_proc(proc, process_controller)
         if proc.returncode != 0:
             err = (proc.stderr.read() if proc.stderr else b"").decode("utf-8", errors="replace")
             raise subprocess.CalledProcessError(proc.returncode, cmd, stderr=err)
@@ -1188,6 +1388,624 @@ def _trim_cues(cues: list[tuple[float, float, str]], max_seconds: float) -> list
             break
         trimmed.append((start, min(end, max_seconds), text))
     return trimmed
+
+
+class _GroqWord:
+    __slots__ = ("word", "start", "end")
+
+    def __init__(self, word: str, start: float, end: float):
+        self.word = word
+        self.start = start
+        self.end = end
+
+
+def groq_model_for_language(language: str) -> str:
+    """Model Groq STT đang dùng (ưu tiên cache theo ngôn ngữ)."""
+    load_cached_groq_models()
+    return groq_whisper_active_model(language)
+
+
+def _groq_model_for_language(language: str) -> str:
+    return groq_model_for_language(language)
+
+
+def _groq_prompt_tail(text: str) -> str:
+    return _groq_trim_prompt(text)
+
+
+def _groq_prompt_token_count(text: str) -> int | None:
+    try:
+        import tiktoken
+
+        enc = tiktoken.get_encoding("cl100k_base")
+        return len(enc.encode(text or ""))
+    except Exception:
+        return None
+
+
+def _groq_trim_prompt(text: str, *, max_chars: int | None = None, max_tokens: int | None = None) -> str:
+    """Groq Whisper: prompt ≤896 ký tự (và ~224 token). Luôn cắt an toàn trước khi gửi."""
+    text = unicodedata.normalize("NFC", (text or "").strip())
+    if not text:
+        return ""
+    char_limit = min(max_chars or GROQ_PROMPT_MAX_CHARS, GROQ_PROMPT_API_CHAR_MAX)
+    token_limit = max_tokens or GROQ_PROMPT_MAX_TOKENS
+
+    def _fit_chars(value: str) -> str:
+        if len(value) <= char_limit:
+            return value
+        chunk = value[-char_limit:]
+        space = chunk.find(" ")
+        if 0 < space < min(96, char_limit // 4):
+            chunk = chunk[space + 1 :]
+        return chunk
+
+    trimmed = _fit_chars(text)
+    tokens = _groq_prompt_token_count(trimmed)
+    if tokens is not None and tokens > token_limit:
+        low, high = 0, len(trimmed)
+        best = ""
+        while low <= high:
+            mid = (low + high) // 2
+            candidate = _fit_chars(trimmed[-mid:] if mid else "")
+            count = _groq_prompt_token_count(candidate)
+            if count is not None and count <= token_limit:
+                best = candidate
+                low = mid + 1
+            else:
+                high = mid - 1
+        trimmed = best or trimmed[:char_limit]
+    if len(trimmed) > GROQ_PROMPT_API_CHAR_MAX:
+        trimmed = trimmed[-GROQ_PROMPT_API_CHAR_MAX:]
+    return trimmed
+
+
+def _groq_prompt_too_long_error(err: Exception) -> bool:
+    msg = str(err).lower()
+    return "prompt length" in msg or "prompt contains" in msg
+
+
+def _groq_fold_text(text: str) -> str:
+    text = unicodedata.normalize("NFD", (text or "").lower())
+    text = "".join(ch for ch in text if unicodedata.category(ch) != "Mn")
+    return re.sub(r"[^a-z0-9]+", "", text)
+
+
+def _groq_text_is_hallucination(text: str, *, duration: float = 0.0) -> bool:
+    """Phát hiện ảo giác Whisper: echo prompt, nhạc nền, chữ vô nghĩa."""
+    compact = re.sub(r"\s+", " ", (text or "").strip())
+    if not compact:
+        return True
+    folded = _groq_fold_text(compact)
+    for marker in GROQ_PROMPT_ECHO_MARKERS:
+        if _groq_fold_text(marker) in folded:
+            return True
+    if "ndung" in folded and "nhi" in folded and len(folded) < 90:
+        return True
+
+    words = compact.split()
+    word_count = len(words)
+    if duration >= 15.0 and word_count <= 6:
+        return True
+    if word_count >= 4:
+        tiny = sum(1 for w in words if len(w) <= 2)
+        if tiny / word_count > 0.55 and duration >= 8.0:
+            return True
+    if duration >= 20.0 and word_count >= 8:
+        has_vn_tone = re.search(
+            r"[àáảãạăắằẳẵặâấầẩẫậèéẻẽẹêếềểễệìíỉĩịòóỏõọôốồổỗộơớờởỡợùúủũụưứừửữựỳýỷỹỵđ]",
+            compact,
+            re.I,
+        )
+        if not has_vn_tone:
+            return True
+    return False
+
+
+def _groq_prompt_from_cues(cues: list[tuple[float, float, str]]) -> str:
+    """Chỉ dùng vài cue cuối chunk làm prompt — tránh vượt giới hạn Groq."""
+    parts: list[str] = []
+    for _, _, text in cues:
+        if _groq_text_is_hallucination(text):
+            continue
+        cleaned = text.strip()
+        if cleaned:
+            parts.append(cleaned)
+    if not parts:
+        return ""
+    tail_parts = parts[-GROQ_PROMPT_MAX_CUES:]
+    return _groq_trim_prompt(" ".join(tail_parts))
+
+
+def _groq_prompt_for_chunk(prompt_tail: str = "") -> str | None:
+    tail = _groq_trim_prompt(prompt_tail)
+    return tail or None
+
+
+def _groq_segment_text_duration(seg) -> tuple[str, float]:
+    if isinstance(seg, dict):
+        start = float(seg.get("start", 0))
+        end = float(seg.get("end", start))
+        text = (seg.get("text") or "").strip()
+    else:
+        start = float(getattr(seg, "start", 0))
+        end = float(getattr(seg, "end", start))
+        text = (getattr(seg, "text", "") or "").strip()
+    return text, max(end - start, 0.0)
+
+
+def _groq_skip_segment(seg) -> bool:
+    """Bỏ segment Whisper hay ảo giác trên nhạc nền / không có lời."""
+    text, duration = _groq_segment_text_duration(seg)
+    if _groq_text_is_hallucination(text, duration=duration):
+        return True
+    if isinstance(seg, dict):
+        nsp = seg.get("no_speech_prob")
+        cr = seg.get("compression_ratio")
+    else:
+        nsp = getattr(seg, "no_speech_prob", None)
+        cr = getattr(seg, "compression_ratio", None)
+    if nsp is not None and float(nsp) > 0.75:
+        return True
+    if duration >= 18.0 and nsp is not None and float(nsp) > 0.35:
+        return True
+    if (
+        cr is not None
+        and float(cr) > 2.4
+        and nsp is not None
+        and float(nsp) > 0.45
+    ):
+        return True
+    return False
+
+
+def _groq_filter_cues(
+    cues: list[tuple[float, float, str]],
+) -> list[tuple[float, float, str]]:
+    out: list[tuple[float, float, str]] = []
+    for start, end, text in cues:
+        if _groq_text_is_hallucination(text, duration=max(end - start, 0.0)):
+            continue
+        out.append((start, end, text))
+    return out
+
+
+def _groq_seg_words(seg, chunk_offset: float) -> list[_GroqWord]:
+    seg_words = seg.get("words") if isinstance(seg, dict) else getattr(seg, "words", None)
+    out: list[_GroqWord] = []
+    for w in seg_words or []:
+        if isinstance(w, dict):
+            word = (w.get("word") or "").strip()
+            start = float(w.get("start", 0))
+            end = float(w.get("end", start))
+        else:
+            word = (getattr(w, "word", "") or "").strip()
+            start = float(getattr(w, "start", 0))
+            end = float(getattr(w, "end", start))
+        if word:
+            out.append(
+                _GroqWord(
+                    word,
+                    chunk_offset + start,
+                    chunk_offset + max(start + 0.05, end),
+                )
+            )
+    return out
+
+
+def _groq_collect_words(result, offset: float = 0.0) -> list[_GroqWord]:
+    words: list[_GroqWord] = []
+    raw_words = getattr(result, "words", None)
+    if raw_words is None and isinstance(result, dict):
+        raw_words = result.get("words")
+    if raw_words:
+        for w in raw_words:
+            if isinstance(w, dict):
+                word = (w.get("word") or "").strip()
+                start = float(w.get("start", 0))
+                end = float(w.get("end", start))
+            else:
+                word = (getattr(w, "word", "") or "").strip()
+                start = float(getattr(w, "start", 0))
+                end = float(getattr(w, "end", start))
+            if word:
+                words.append(_GroqWord(word, offset + start, offset + max(start + 0.05, end)))
+        return words
+
+    segments = getattr(result, "segments", None)
+    if segments is None and isinstance(result, dict):
+        segments = result.get("segments")
+    for seg in segments or []:
+        if _groq_skip_segment(seg):
+            continue
+        words.extend(_groq_seg_words(seg, offset))
+    return words
+
+
+def _groq_split_long_segment(
+    seg_words: list[_GroqWord],
+    *,
+    max_duration: float = GROQ_MAX_SEGMENT_DURATION,
+) -> list[tuple[float, float, str]]:
+    if not seg_words:
+        return []
+    params = SRT_SPLIT_PARAMS["many"]
+    return _group_words_to_cues_sentence(
+        seg_words,
+        max_chars=params["max_chars"],
+        max_duration=min(max_duration, params["max_duration"]),
+        min_gap=params["min_gap"],
+        pause_split=params["pause_split"],
+        min_chars=params["min_chars"],
+    )
+
+
+def _groq_response_to_cues(result, offset: float = 0.0) -> list[tuple[float, float, str]]:
+    segments = getattr(result, "segments", None)
+    if segments is None and isinstance(result, dict):
+        segments = result.get("segments")
+    if not segments:
+        text = getattr(result, "text", None)
+        if text is None and isinstance(result, dict):
+            text = result.get("text")
+        text = (text or "").strip()
+        if text and not _groq_text_is_hallucination(text):
+            return [(offset, offset + 0.05, text)]
+        return []
+
+    cues: list[tuple[float, float, str]] = []
+    for seg in segments:
+        if _groq_skip_segment(seg):
+            continue
+        if isinstance(seg, dict):
+            start = float(seg.get("start", 0))
+            end = float(seg.get("end", start))
+            text = (seg.get("text") or "").strip()
+        else:
+            start = float(getattr(seg, "start", 0))
+            end = float(getattr(seg, "end", start))
+            text = (getattr(seg, "text", "") or "").strip()
+        if not text:
+            continue
+        abs_start = offset + start
+        abs_end = offset + max(start + 0.05, end)
+        duration = abs_end - abs_start
+        if duration > GROQ_MAX_SEGMENT_DURATION:
+            seg_words = _groq_seg_words(seg, offset)
+            if seg_words:
+                split = _groq_split_long_segment(seg_words)
+                if split:
+                    cues.extend(split)
+                    continue
+        cues.append((abs_start, abs_end, text))
+    return cues
+
+
+def _run_ffmpeg_convert(
+    cmd: list[str],
+    *,
+    process_controller: ProcessController | None = None,
+) -> None:
+    creationflags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        creationflags=creationflags,
+    )
+    if process_controller:
+        process_controller.attach(proc)
+    try:
+        _poll_ffmpeg_proc(proc, process_controller)
+        if proc.returncode != 0:
+            err = (proc.stderr.read() if proc.stderr else b"").decode("utf-8", errors="replace")
+            raise subprocess.CalledProcessError(proc.returncode, cmd, stderr=err)
+    finally:
+        if process_controller:
+            process_controller.detach()
+
+
+def _ffmpeg_to_flac_mono16k(
+    audio_path: Path,
+    dest: Path,
+    *,
+    start: float = 0.0,
+    duration: float | None = None,
+    process_controller: ProcessController | None = None,
+) -> None:
+    from videobuilder.core.ffmpeg_setup import ensure_ffmpeg_on_path, resolve_ffmpeg
+
+    ensure_ffmpeg_on_path()
+    ffmpeg = resolve_ffmpeg()
+    if not ffmpeg:
+        raise CreateSrtError("Cần FFmpeg để chuẩn bị audio cho Groq.")
+
+    cmd = [ffmpeg, "-y", "-hide_banner", "-loglevel", "error"]
+    if start > 0:
+        cmd.extend(["-ss", str(start)])
+    cmd.extend(["-i", str(audio_path)])
+    if duration is not None and duration > 0:
+        cmd.extend(["-t", str(duration)])
+    cmd.extend(["-ac", "1", "-ar", "16000", "-c:a", "flac", str(dest)])
+    _run_ffmpeg_convert(cmd, process_controller=process_controller)
+
+
+def _groq_prepare_chunks(
+    audio_path: Path,
+    *,
+    max_seconds: float | None = None,
+    log_callback=None,
+    process_controller: ProcessController | None = None,
+) -> tuple[list[tuple[Path, float]], list[Path]]:
+    """Chuẩn bị chunk FLAC cho Groq (≤25MB, ~8 phút/request để giảm ảo giác)."""
+    try:
+        duration = get_media_duration(audio_path)
+    except Exception:
+        duration = 0.0
+    if max_seconds is not None:
+        if duration > 0:
+            duration = min(duration, max_seconds)
+        else:
+            duration = max_seconds
+
+    total = duration if duration > 0 else GROQ_TRANSCRIBE_CHUNK_SECONDS
+    temps: list[Path] = []
+    chunks: list[tuple[Path, float]] = []
+    offset = 0.0
+    chunk_step = float(GROQ_TRANSCRIBE_CHUNK_SECONDS)
+    need_split = total > chunk_step + 0.5
+
+    if need_split:
+        _log(
+            log_callback,
+            f"Chia ~{chunk_step / 60:.0f} phút/request cho Groq ({total / 60:.1f} phút)...",
+            "info",
+        )
+
+    while offset < total - 0.01:
+        seg_dur = min(chunk_step, total - offset)
+        fd, tmp = tempfile.mkstemp(suffix=".flac")
+        os.close(fd)
+        chunk_path = Path(tmp)
+        temps.append(chunk_path)
+        _ffmpeg_to_flac_mono16k(
+            audio_path,
+            chunk_path,
+            start=offset,
+            duration=seg_dur,
+            process_controller=process_controller,
+        )
+        size = chunk_path.stat().st_size
+        if size > GROQ_MAX_UPLOAD_BYTES:
+            chunk_path.unlink(missing_ok=True)
+            temps.remove(chunk_path)
+            raise CreateSrtError(
+                f"Đoạn audio {offset / 60:.1f} phút vượt giới hạn 25MB của Groq — "
+                "thử rút ngắn preview hoặc nén audio."
+            )
+        chunks.append((chunk_path, offset))
+        offset += seg_dur
+
+    if not chunks:
+        raise CreateSrtError("Không chuẩn bị được audio cho Groq.")
+    return chunks, temps
+
+
+def _groq_transcribe_chunk(
+    client,
+    chunk_path: Path,
+    language: str,
+    offset: float,
+    process_controller: ProcessController | None,
+    *,
+    prompt_tail: str = "",
+    log_callback=None,
+):
+    chain = groq_whisper_model_chain(language)
+
+    kwargs_base = {
+        "file": chunk_path,
+        "response_format": "verbose_json",
+        "temperature": 0.0,
+        "timestamp_granularities": ["word", "segment"],
+    }
+    if language:
+        kwargs_base["language"] = language
+    prompt = _groq_prompt_for_chunk(prompt_tail)
+
+    def call(model: str, extra_prompt: str | None = prompt):
+        kwargs = {**kwargs_base, "model": model}
+        if extra_prompt:
+            kwargs["prompt"] = _groq_trim_prompt(extra_prompt)
+        return client.audio.transcriptions.create(**kwargs)
+
+    last_err: BaseException | None = None
+    for i, model in enumerate(chain):
+        try:
+            if process_controller:
+                try:
+                    result = _run_cancellable(lambda m=model: call(m, prompt), process_controller)
+                except Exception as err:
+                    if prompt and _groq_prompt_too_long_error(err):
+                        _log(
+                            log_callback,
+                            "Prompt chunk vượt giới hạn Groq — thử lại không dùng ngữ cảnh.",
+                            "warn",
+                        )
+                        result = _run_cancellable(
+                            lambda m=model: call(m, None), process_controller,
+                        )
+                    else:
+                        raise
+            else:
+                try:
+                    result = call(model, prompt)
+                except Exception as err:
+                    if prompt and _groq_prompt_too_long_error(err):
+                        _log(
+                            log_callback,
+                            "Prompt chunk vượt giới hạn Groq — thử lại không dùng ngữ cảnh.",
+                            "warn",
+                        )
+                        result = call(model, None)
+                    else:
+                        raise
+        except Exception as err:
+            if is_groq_rate_limit(err) and i < len(chain) - 1:
+                last_err = err
+                if log_callback:
+                    _log(
+                        log_callback,
+                        f"Groq {model} rate limit → thử {chain[i + 1]}...",
+                        "warn",
+                    )
+                continue
+            raise
+
+        if groq_whisper_active_model(language) != model and log_callback:
+            _log(log_callback, f"Groq STT: dùng {model}", "info")
+        set_active_whisper_model(model, language=language)
+        cues = _groq_filter_cues(_groq_response_to_cues(result, offset))
+        words = _groq_collect_words(result, offset)
+        return cues, words
+
+    raise GroqRateLimitError(
+        "Groq STT rate limit — đã thử hết model: "
+        + ", ".join(groq_whisper_model_chain(language))
+        + (f". Chi tiết: {last_err}" if last_err else "")
+    ) from last_err
+
+
+def _transcribe_with_groq(
+    audio_path: Path,
+    *,
+    language: str,
+    split_mode: str = DEFAULT_SRT_SPLIT,
+    progress_callback=None,
+    log_callback=None,
+    process_controller: ProcessController | None = None,
+    max_seconds: float | None = None,
+    refine: bool = True,
+) -> list[tuple[float, float, str]] | tuple[list[tuple[float, float, str]], list[_GroqWord]]:
+    key = groq_api_key()
+    if not key:
+        raise CreateSrtError(f"Thiếu {GROQ_API_KEY_ENV}")
+    if not groq_client_available():
+        raise CreateSrtError("Chưa cài Groq — bấm «Cài đặt» trong tab Tạo SRT.")
+
+    from groq import Groq
+
+    load_cached_groq_models()
+    lang_label = language or "auto"
+    split_key = normalize_srt_split(split_mode)
+    split_label = SRT_SPLIT_KEY_TO_LABEL[split_key]
+    groq_model = groq_whisper_active_model(language)
+    cache_note = " (cache)" if groq_whisper_using_cached_model(language) else ""
+    _log(
+        log_callback,
+        f"Groq {groq_model}{cache_note} · ngôn ngữ {lang_label} · ngắt câu {split_label}",
+    )
+    if not language:
+        _log(
+            log_callback,
+            "Groq: nên chọn ngôn ngữ «vi» thay vì auto để tránh nhận dạng sai.",
+            "warn",
+        )
+
+    _check_controller(process_controller)
+    report = _progress_with_cancel(process_controller, progress_callback)
+    report(5, "Chuẩn bị audio cho Groq...")
+
+    client = Groq(api_key=key)
+    chunks, temps = _groq_prepare_chunks(
+        audio_path,
+        max_seconds=max_seconds,
+        log_callback=log_callback,
+        process_controller=process_controller,
+    )
+    all_cues: list[tuple[float, float, str]] = []
+    all_words: list[_GroqWord] = []
+    prompt_tail = ""
+    try:
+        total = len(chunks)
+        for i, (chunk_path, offset) in enumerate(chunks):
+            _check_controller(process_controller)
+            pct = 10.0 + ((i + 1) / total) * 80.0
+            report(pct, f"Groq nhận dạng ({i + 1}/{total})...")
+            try:
+                cues, words = _groq_transcribe_chunk(
+                    client,
+                    chunk_path,
+                    language,
+                    offset,
+                    process_controller,
+                    prompt_tail=prompt_tail,
+                    log_callback=log_callback,
+                )
+            except GroqRateLimitError:
+                raise
+            except Exception as err:
+                if is_groq_rate_limit(err):
+                    raise GroqRateLimitError(str(err)) from err
+                raise
+            all_cues.extend(cues)
+            all_words.extend(words)
+            chunk_prompt = _groq_prompt_from_cues(cues)
+            if chunk_prompt:
+                prompt_tail = chunk_prompt
+    finally:
+        for path in temps:
+            path.unlink(missing_ok=True)
+
+    if not all_cues:
+        raise CreateSrtError("Groq không nhận dạng được lời thoại trong audio.")
+    filtered = _groq_filter_cues(all_cues)
+    if not filtered:
+        raise CreateSrtError("Groq không nhận dạng được lời thoại trong audio.")
+    if not refine:
+        report(95, f"Groq xong — {len(filtered)} segment")
+        return filtered, all_words
+    use_words = split_key in ("short", "many") and all_words
+    all_cues = refine_srt_cues(
+        filtered,
+        split_key,
+        words=all_words if use_words else None,
+    )
+    if not all_cues:
+        raise CreateSrtError("Groq không nhận dạng được lời thoại trong audio.")
+    report(95, f"Groq xong — {len(all_cues)} cue")
+    return all_cues
+
+
+def transcribe_groq_strict(
+    audio_path: Path,
+    *,
+    language: str = DEFAULT_LANGUAGE,
+    progress_callback=None,
+    log_callback=None,
+    process_controller: ProcessController | None = None,
+    max_seconds: float | None = None,
+) -> tuple[list[tuple[float, float, str]], list[_GroqWord]]:
+    """Chỉ Groq STT — trả segment thô (đã lọc ảo giác) + word timestamps."""
+    if not groq_api_key():
+        raise CreateSrtError(f"Thiếu {GROQ_API_KEY_ENV}")
+    if not groq_client_available():
+        raise CreateSrtError("Chưa cài Groq — bấm «Cài đặt» trong tab Tạo SRT.")
+    if language == "auto":
+        language = ""
+    result = _transcribe_with_groq(
+        Path(audio_path),
+        language=language,
+        split_mode="normal",
+        progress_callback=progress_callback,
+        log_callback=log_callback,
+        process_controller=process_controller,
+        max_seconds=max_seconds,
+        refine=False,
+    )
+    if not isinstance(result, tuple):
+        raise CreateSrtError("Groq không trả segment.")
+    return result
 
 
 def default_srt_path(audio_path: Path) -> Path:
@@ -1319,17 +2137,82 @@ def transcribe_audio(
     process_controller: ProcessController | None = None,
     max_seconds: float | None = None,
 ) -> list[tuple[float, float, str]]:
-    ensure_whisper()
-
     audio_path = Path(audio_path)
     if not audio_path.is_file():
         raise FileNotFoundError(f"Không tìm thấy audio: {audio_path}")
 
-    if model not in WHISPER_MODELS:
-        raise ValueError(f"Model không hợp lệ: {model}")
-
     if language == "auto":
         language = ""
+
+    groq_ready = bool(groq_api_key()) and groq_client_available()
+    if groq_ready:
+        try:
+            return _transcribe_with_groq(
+                audio_path,
+                language=language,
+                split_mode=split_mode,
+                progress_callback=progress_callback,
+                log_callback=log_callback,
+                process_controller=process_controller,
+                max_seconds=max_seconds,
+            )
+        except CreateSrtCancelled:
+            raise
+        except GroqRateLimitError as err:
+            _log(
+                log_callback,
+                f"Groq rate limit / hết quota — chuyển faster-whisper local. ({err})",
+                "warn",
+            )
+        except Exception as err:
+            if is_groq_rate_limit(err):
+                _log(
+                    log_callback,
+                    f"Groq rate limit / hết quota — chuyển faster-whisper local. ({err})",
+                    "warn",
+                )
+            else:
+                _log(
+                    log_callback,
+                    f"Groq lỗi ({err}) — thử faster-whisper local.",
+                    "warn",
+                )
+    elif groq_api_key() and not groq_client_available():
+        _log(
+            log_callback,
+            "Có API key nhưng chưa cài Groq — bấm «Cài đặt» hoặc đợi cài tự động.",
+            "warn",
+        )
+    else:
+        _log(log_callback, f"Không có {GROQ_API_KEY_ENV} — dùng faster-whisper local.", "info")
+
+    return _transcribe_with_whisper_local(
+        audio_path,
+        model=model,
+        language=language,
+        split_mode=split_mode,
+        progress_callback=progress_callback,
+        log_callback=log_callback,
+        process_controller=process_controller,
+        max_seconds=max_seconds,
+    )
+
+
+def _transcribe_with_whisper_local(
+    audio_path: Path,
+    *,
+    model: str = DEFAULT_MODEL,
+    language: str = DEFAULT_LANGUAGE,
+    split_mode: str = DEFAULT_SRT_SPLIT,
+    progress_callback=None,
+    log_callback=None,
+    process_controller: ProcessController | None = None,
+    max_seconds: float | None = None,
+) -> list[tuple[float, float, str]]:
+    ensure_whisper()
+
+    if model not in WHISPER_MODELS:
+        raise ValueError(f"Model không hợp lệ: {model}")
 
     devices: list[str] = []
     if cuda_available():
@@ -1463,7 +2346,7 @@ def _log(callback, message, level="info"):
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Tạo file SRT từ audio (Whisper)")
+    parser = argparse.ArgumentParser(description="Tạo file SRT từ audio (Groq → faster-whisper)")
     parser.add_argument("--audio", "-a", required=True, help="File audio (.mp3, .wav, ...)")
     parser.add_argument("--output", "-o", default="", help="File SRT xuất (mặc định: cùng tên audio)")
     parser.add_argument("--model", "-m", default=DEFAULT_MODEL, choices=WHISPER_MODELS)

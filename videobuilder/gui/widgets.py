@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
+import os
+from pathlib import Path
+
 import tkinter as tk
 import tkinter.font as tkfont
 from tkinter import ttk
 
 from videobuilder.gui.constants import C, FIELD_HELP
+from videobuilder.gui.paths import default_output_folder
 
 
 class WidgetMixin:
@@ -70,6 +74,20 @@ class WidgetMixin:
             style.configure("Small.TButton", padding=(8, 3), font=self._font(9))
             style.configure("Ghost.TButton", padding=(8, 3), font=self._font(9))
             style.configure("Horizontal.TProgressbar", troughcolor=C["progress_trough"], background=C["progress_bar"], thickness=8)
+
+        def _native_checkbutton(self, parent, variable):
+            """Checkbox hệ thống — dấu ✓, không dùng indicator X của ttk/clam."""
+            return tk.Checkbutton(
+                parent,
+                variable=variable,
+                bg=C["card"],
+                activebackground=C["card"],
+                selectcolor="#ffffff",
+                highlightthickness=0,
+                bd=0,
+                padx=0,
+                pady=0,
+            )
 
         def _setup_widget_colors(self):
             """Tránh ô input/combobox bị nền đen trên Windows."""
@@ -213,8 +231,82 @@ class WidgetMixin:
             self._path_pick_clear_buttons(row_frame, command, variable, on_clear)
             return entry
 
-        def _output_path_field(self, parent, row):
-            self._grid_field_label(parent, row, "File xuất", "output")
+        def _sanitize_export_stem(self, name: str, *, fallback: str = "subtitle") -> str:
+            text = (name or "").strip() or fallback
+            text = Path(text.replace("\\", "/")).name
+            for ext in (".srt", ".txt", ".mp4"):
+                if text.lower().endswith(ext):
+                    text = Path(text).stem
+            for ch in '<>:"/\\|?*':
+                text = text.replace(ch, "")
+            return text.strip() or fallback
+
+        def _build_export_file_path(
+            self,
+            folder: str,
+            name: str,
+            suffix: str,
+            *,
+            audio_path: str = "",
+        ) -> str:
+            folder_text = (folder or "").strip().rstrip("/\\")
+            if not folder_text:
+                audio = (audio_path or "").strip()
+                if audio and Path(audio).is_file():
+                    folder_text = str(Path(audio).parent)
+                else:
+                    folder_text = str(default_output_folder())
+            stem = self._sanitize_export_stem(name)
+            return str(Path(folder_text) / f"{stem}{suffix}")
+
+        def _sync_file_export_display(
+            self,
+            full_var,
+            dir_var,
+            name_var,
+            suffix: str,
+            *,
+            from_output_var=False,
+            fallback_stem: str = "subtitle",
+            audio_path: str = "",
+        ):
+            if from_output_var:
+                saved = full_var.get().strip()
+                if not saved:
+                    dir_var.set("")
+                    name_var.set(fallback_stem)
+                    return
+                path = Path(saved)
+                dir_var.set(self._format_output_dir(str(path.parent)))
+                name_var.set(path.stem)
+            full = self._build_export_file_path(
+                dir_var.get(), name_var.get(), suffix,
+                audio_path=audio_path,
+            )
+            path = Path(full)
+            full_var.set(str(path))
+            dir_var.set(self._format_output_dir(str(path.parent)))
+            name_var.set(path.stem)
+
+        def _export_path_field(
+            self,
+            parent,
+            row,
+            label: str,
+            help_key: str,
+            *,
+            full_var,
+            dir_var,
+            name_var,
+            suffix: str,
+            pick_cmd,
+            reset_cmd,
+            apply_cmd,
+            label_width=12,
+            enable_var=None,
+        ):
+            """Thư mục + tên file + đuôi — dùng cho SRT, prompt, v.v."""
+            self._grid_field_label(parent, row, label, help_key, label_width=label_width)
             row_frame = ttk.Frame(parent, style="Card.TFrame")
             row_frame.grid(row=row, column=1, columnspan=2, sticky="ew", pady=4)
             row_frame.columnconfigure(0, weight=1)
@@ -227,12 +319,12 @@ class WidgetMixin:
             inner.columnconfigure(1, weight=1)
 
             tk.Label(
-                inner, textvariable=self.output_dir_var, anchor="w",
+                inner, textvariable=dir_var, anchor="w",
                 font=self._font(9), bg=C["entry_bg"], fg=C["muted"],
             ).grid(row=0, column=0, sticky="w", padx=(8, 0), pady=4)
 
             name_entry = tk.Entry(
-                inner, textvariable=self.output_name_var,
+                inner, textvariable=name_var,
                 font=self._font(9), bg="#ffffff", fg=C["text"],
                 relief=tk.FLAT, borderwidth=1, highlightthickness=1,
                 highlightbackground=C["border"], highlightcolor=C["accent"],
@@ -240,20 +332,48 @@ class WidgetMixin:
             name_entry.grid(row=0, column=1, sticky="ew", padx=2, pady=3)
 
             tk.Label(
-                inner, text=".mp4", font=self._font(9),
+                inner, text=suffix, font=self._font(9),
                 bg=C["entry_bg"], fg=C["muted"],
             ).grid(row=0, column=2, sticky="e", padx=(2, 8), pady=4)
 
             btn_frame = ttk.Frame(row_frame, style="Card.TFrame")
             btn_frame.grid(row=0, column=1, sticky="e")
+            if enable_var is not None:
+                self._native_checkbutton(btn_frame, enable_var).pack(side=tk.LEFT, padx=(0, 6))
             ttk.Button(
-                btn_frame, text="Chọn", command=self._pick_output, style="Small.TButton", width=5,
+                btn_frame, text="Chọn", command=pick_cmd, style="Small.TButton", width=5,
             ).pack(side=tk.LEFT, padx=(0, 4))
             ttk.Button(
-                btn_frame, text="Xóa", command=self._reset_output_path, style="Small.TButton", width=4,
+                btn_frame, text="Xóa", command=reset_cmd, style="Small.TButton", width=4,
             ).pack(side=tk.LEFT)
-            name_entry.bind("<FocusOut>", lambda _e: self._apply_output_name())
+            name_entry.bind("<FocusOut>", lambda _e: apply_cmd())
             return name_entry
+
+        def _output_path_field(self, parent, row):
+            name_entry = self._export_path_field(
+                parent, row, "File xuất", "output",
+                full_var=self.output_var,
+                dir_var=self.output_dir_var,
+                name_var=self.output_name_var,
+                suffix=".mp4",
+                pick_cmd=self._pick_output,
+                reset_cmd=self._reset_output_path,
+                apply_cmd=self._apply_output_name,
+            )
+            return name_entry
+
+        def _prompts_export_path_field(self, parent, row, label_width=12):
+            return self._export_path_field(
+                parent, row, "File timeline", "prompts",
+                label_width=label_width,
+                full_var=self.prompts_var,
+                dir_var=self.prompts_dir_var,
+                name_var=self.prompts_name_var,
+                suffix=".txt",
+                pick_cmd=self._pick_prompts,
+                reset_cmd=self._reset_prompts_path,
+                apply_cmd=self._apply_prompts_name,
+            )
 
         def _opts_cell(self, parent, row, col, label, widget_factory, help_key=None):
             """col=0: cột trái, col=1: cột phải — mỗi cột gồm label + widget."""

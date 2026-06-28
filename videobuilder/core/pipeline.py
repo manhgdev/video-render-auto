@@ -1257,7 +1257,7 @@ def build_video_with_transitions(
         subtitle=subtitle, watermark=watermark, watermark_opacity=watermark_opacity,
         workdir=workdir, subtitle_style=subtitle_style, log_callback=log_callback,
         progress_callback=progress_callback, progress_duration=mux_duration,
-        progress_base=82, progress_span=15,
+        progress_base=82, progress_span=17,
         process_controller=process_controller,
     )
     report_progress(progress_callback, PROGRESS_RENDER_MAX, "Render xong, hoàn tất...")
@@ -1459,9 +1459,9 @@ def parse_scene_bracket_time(mm: str, sep: str, ss: str, frac: str | None = None
 
 SCENE_LINE_RE = re.compile(
     r"^(\d{3})_\["
-    r"(\d{2})([:.])(\d{2})(?:\.(\d{1,3}))?"
+    r"(\d{2}(?:\.\d{2}(?:\.\d{2}(?:\.\d{1,3})?)?|:\d{2}(?:\.\d{1,3})?)?)"
     r"\s*[–-]\s*"
-    r"(\d{2})([:.])(\d{2})(?:\.(\d{1,3}))?"
+    r"(\d{2}(?:\.\d{2}(?:\.\d{2}(?:\.\d{1,3})?)?|:\d{2}(?:\.\d{1,3})?)?)"
     r"\]",
     re.IGNORECASE,
 )
@@ -1570,6 +1570,8 @@ def parse_bracket_time_range(text: str):
 
 
 def parse_prompt_scenes(prompt_file: Path, audio_duration: float):
+    from videobuilder.core.generate_prompts import parse_prompt_timecode_token
+
     text = prompt_file.read_text(encoding="utf-8", errors="ignore")
     lines = text.splitlines()
 
@@ -1584,12 +1586,11 @@ def parse_prompt_scenes(prompt_file: Path, audio_duration: float):
             match = SCENE_LINE_RE.match(line)
             if match:
                 scene_num = int(match.group(1))
-                start = parse_scene_bracket_time(
-                    match.group(2), match.group(3), match.group(4), match.group(5),
-                )
-                end = parse_scene_bracket_time(
-                    match.group(6), match.group(7), match.group(8), match.group(9),
-                )
+                try:
+                    start = parse_prompt_timecode_token(match.group(2))
+                    end = parse_prompt_timecode_token(match.group(3))
+                except ValueError:
+                    continue
                 if end > start:
                     scenes.append((scene_num, start, end))
         if scenes:
@@ -1786,7 +1787,7 @@ def build_fast_video(
             subtitle=subtitle_path, watermark=watermark_path, watermark_opacity=watermark_opacity,
             workdir=workdir, subtitle_style=subtitle_style,
             progress_callback=progress_callback, progress_duration=progress_duration,
-            progress_base=70, progress_span=27,
+            progress_base=70, progress_span=29,
             log_callback=log_callback, process_controller=process_controller,
         )
         return used
@@ -1832,7 +1833,7 @@ def build_fast_video(
         progress_callback=progress_callback,
         progress_duration=progress_duration,
         progress_base=5,
-        progress_span=92,
+        progress_span=94,
         log_callback=log_callback,
         process_controller=process_controller,
     )

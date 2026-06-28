@@ -6,8 +6,8 @@ from __future__ import annotations
 
 import threading
 
-PROGRESS_RENDER_MAX = 97.0   # render chính (zoom, encode, mux)
-PROGRESS_FINALE_MAX = 99.9   # speed / bước cuối — 100% chỉ khi app báo xong
+PROGRESS_RENDER_MAX = 99.0    # render chính — 100% khi UI báo xong
+PROGRESS_FINALE_MAX = 99.5    # speed / strip metadata
 
 _progress_lock = threading.Lock()
 _progress_floor = {"v": 0.0}

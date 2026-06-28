@@ -477,10 +477,10 @@ class RenderTabMixin:
                         finale_steps.append("speed")
                     if strip_meta:
                         finale_steps.append("meta")
-                    step_span = 2.9 / max(len(finale_steps), 1)
+                    step_span = 0.5 / max(len(finale_steps), 1)
 
                     for i, step in enumerate(finale_steps):
-                        pb = 97.0 + i * step_span
+                        pb = 99.0 + i * step_span
                         if step == "speed":
                             self._log("——— Chỉnh tốc độ (speed) ———", "info")
                             apply_playback_speed(
@@ -534,14 +534,15 @@ class RenderTabMixin:
                     self.after(0, lambda e=err_copy: self._show_render_error(e))
                 finally:
                     def done():
-                        self._stop_progress_heartbeat()
+                        if cancelled:
+                            self._render_tracker.reset(0.0)
+                            self.percent_var.set("0%")
+                        else:
+                            self._render_tracker.finish(100.0)
                         self.rendering = False
                         self.render_paused = False
                         self.process_controller = None
                         self._set_rendering(False)
-                        if cancelled:
-                            self._render_tracker.reset(0.0)
-                            self.percent_var.set("0%")
 
                     self.after(0, done)
 

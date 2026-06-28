@@ -1,5 +1,7 @@
-# Whisper / faster-whisper — torch cần NumPy 1.x; lỗi cublas64_12.dll → torch cu121
+# Groq STT + Groq LLM prompt ảnh + faster-whisper fallback
 numpy<2
+groq
 faster-whisper
+python-dotenv
 # Tự cài khi gặp lỗi CUDA cublas (hoặc thủ công):
 # pip install torch==2.2.1 torchvision==0.17.1 torchaudio==2.2.1 --index-url https://download.pytorch.org/whl/cu121

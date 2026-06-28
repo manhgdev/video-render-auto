@@ -93,19 +93,13 @@ FIELD_HELP = {
         "Đuôi: .mp3, .wav, .m4a, .aac",
     ),
     "prompts": (
-        "File prompt",
+        "File timeline",
         "File text (.txt) mô tả scene và mốc thời gian.\n\n"
-        "Định dạng chuẩn (mỗi scene):\n"
-        "  NNN_[MM.SS–MM.SS]_tên.jpg\n"
-        "  NNN_[MM:SS.ss–MM:SS.ss] ... (timeline SRT, giây lẻ)\n"
-        "  [MM:SS–MM:SS] Nội dung mô tả...\n\n"
-        "• NNN — số scene (001, 002, ...)\n"
-        "• MM.SS — phút.giây (dấu chấm, không dùng :)\n"
-        "• MM:SS.ss — phút:giây (có thể có .xx giây lẻ)\n"
-        "• Bỏ qua dòng 001_[CHARACTER REFERENCE]\n\n"
-        "Ví dụ:\n"
-        "  002_[00.00–00.02]_manh1.jpg\n"
-        "  [00:00–00:02] Hand-drawn 2D doodle...",
+        "• Nút Chọn — mở file .txt có sẵn (file tạo ảnh từ tab Tạo SRT)\n"
+        "• Tên file — sửa ở ô bên cạnh (đuôi .txt cố định)\n"
+        "• Mặc định: cùng thư mục, cùng tên với audio (.txt)\n\n"
+        "Format file tạo ảnh (mỗi prompt một dòng, cách nhau dòng trống):\n"
+        "  001_[00.00.00-00.00.01.92] CHARACTER BIBLE: ... Câu audio bám sát: ...",
     ),
     "output": (
         "File xuất",
@@ -249,18 +243,26 @@ FIELD_HELP = {
         "• 2 — nền đậm hơn",
     ),
     "srt_whisper": (
-        "Whisper",
-        "Nhận dạng giọng nói bằng faster-whisper (OpenAI Whisper).\n\n"
-        "1. Cài Whisper nếu chưa có\n"
-        "2. Chọn file audio\n"
-        "3. Chọn model và ngôn ngữ\n"
-        "4. Bấm Tạo SRT (đã có .srt → chỉ cập nhật ngắt câu)\n"
-        "5. Gán file .srt vào tab Dự án → File phụ đề",
+        "API key",
+        "Groq free tier: STT (Whisper) + LLM (prompt ảnh visual beat).\n\n"
+        "Lấy key tại console.groq.com\n"
+        "Hiện/Ẩn · Xóa · Kiểm tra · Cài đặt gói groq + Whisper.\n"
+        "Có thể dùng GROQ_API_KEY trong .env.",
+    ),
+    "srt_groq_api_key": (
+        "Groq API key",
+        "API key lấy tại console.groq.com (free tier).\n\n"
+        "• STT: Groq Whisper (ưu tiên)\n"
+        "• STT: Groq Whisper (turbo/large-v3, tự đổi khi limit)\n"
+        "• Timeline: Groq LLM (compound, scout, 8b, qwen… tự fallback)\n"
+        "• Rate limit / hết quota → tự chuyển faster-whisper local\n"
+        "• Lưu trong cài đặt app (file settings local)\n\n"
+        "Có thể dùng biến môi trường GROQ_API_KEY thay cho ô nhập.",
     ),
     "srt_audio": (
         "Audio → SRT",
         "File nhạc / lồng tiếng cần chuyển thành phụ đề.\n\n"
-        "Dùng Whisper (faster-whisper) nhận dạng giọng nói.\n"
+        "Groq API trước; rate limit / hết quota → faster-whisper local → .srt\n"
         "Đuôi: .mp3, .wav, .m4a, .aac",
     ),
     "srt_output": (
@@ -269,19 +271,29 @@ FIELD_HELP = {
         "Mặc định: cùng thư mục, cùng tên với audio.\n"
         "Có thể chọn đường dẫn khác.",
     ),
+    "srt_prompts_output": (
+        "File tạo ảnh",
+        "File mô tả scene và mốc thời gian (.txt) — Groq LLM visual beat.\n\n"
+        "Ô tick bên trái «Chọn» — bật/tắt tạo file khi bấm Tạo SRT.\n"
+        "Format: mỗi prompt một dòng liền (CHARACTER BIBLE, Câu audio bám sát, Ý cảnh...), "
+        "cách nhau một dòng trống.\n"
+        "Giống «File SRT xuất»: thư mục + tên file + .txt\n"
+        "Mặc định: cùng thư mục, cùng tên với audio.\n"
+        "Đã có SRT → có thể tạo lại file tạo ảnh mà không nhận dạng lại audio.",
+    ),
     "srt_model": (
-        "Model Whisper",
-        "Độ chính xác vs tốc độ.\n\n"
+        "Whisper",
+        "Model faster-whisper local — dùng khi Groq bị giới hạn.\n\n"
         "• tiny / base — nhanh, kém hơn\n"
         "• small — cân bằng (khuyên dùng)\n"
         "• medium / large-v3 — chính xác hơn, chậm\n\n"
-        "Model mới chỉ tải một lần (cache Hugging Face), lần sau dùng lại không cần mạng.",
+        "Model tải một lần, lưu cache Hugging Face.",
     ),
     "srt_language": (
         "Ngôn ngữ",
         "Mã ISO ngôn ngữ trong audio.\n\n"
         "• auto — tự phát hiện (mặc định)\n"
-        "• vi — Tiếng Việt\n"
+        "• vi — Tiếng Việt (Groq dùng whisper-large-v3)\n"
         "• en — English",
     ),
     "srt_split": (
@@ -289,10 +301,10 @@ FIELD_HELP = {
         "Độ dài mỗi dòng phụ đề.\n\n"
         "• Rất ít ngắt — gộp rất nhiều, dòng dài nhất\n"
         "• Ít ngắt — gộp nhiều câu\n"
-        "• Bình thường — giữ nguyên Whisper\n"
+        "• Bình thường — giữ nguyên segment nhận dạng\n"
         "• Nhiều ngắt — tách theo hết câu (. ! ?) và cụm viết hoa đầu dòng\n"
         "• Khá ngắt — như Nhiều ngắt, thêm tách dấu phẩy\n"
         "• Rất ngắt — dòng ngắn, tách dấu phẩy (kiểu Shorts)\n\n"
-        "Đã có .srt → «Áp dụng» (vài giây). Whisper chỉ khi tạo SRT mới.",
+        "Đã có .srt → «Áp dụng» (vài giây). Nhận dạng mới chỉ khi tạo SRT.",
     ),
 }

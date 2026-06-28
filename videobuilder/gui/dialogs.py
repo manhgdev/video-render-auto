@@ -35,9 +35,9 @@ class DialogMixin:
             ).pack(fill=tk.X)
 
             line_count = message.count("\n") + 1
-            use_scroll = line_count >= 8 or len(message) > 480
+            use_text = kind in ("error", "warning") or line_count >= 8 or len(message) > 200
 
-            if use_scroll:
+            if use_text:
                 win.resizable(True, True)
                 win.minsize(460, 300)
                 msg_frame = tk.Frame(outer, bg=C["card"])
@@ -56,15 +56,41 @@ class DialogMixin:
                     highlightbackground=C["border"],
                     padx=10,
                     pady=8,
+                    exportselection=True,
                 )
                 scroll = ttk.Scrollbar(msg_frame, orient=tk.VERTICAL, command=text.yview)
                 text.configure(yscrollcommand=scroll.set)
                 text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
                 scroll.pack(side=tk.RIGHT, fill=tk.Y)
                 text.insert("1.0", message)
-                text.configure(state=tk.DISABLED)
+
+                def _block_edit(event):
+                    if event.state & 0x4 and event.keysym.lower() in ("c", "a", "x"):
+                        return
+                    if event.keysym in (
+                        "Left", "Right", "Up", "Down", "Home", "End",
+                        "Prior", "Next", "Shift_L", "Shift_R", "Control_L", "Control_R",
+                    ):
+                        return
+                    return "break"
+
+                text.bind("<Key>", _block_edit)
+
+                def copy_message():
+                    try:
+                        selected = text.get(tk.SEL_FIRST, tk.SEL_LAST)
+                    except tk.TclError:
+                        selected = message
+                    win.clipboard_clear()
+                    win.clipboard_append(selected)
+                    win.update_idletasks()
+
+                if kind in ("error", "warning"):
+                    win.bind("<Control-c>", lambda _e: copy_message())
+                    win.bind("<Control-C>", lambda _e: copy_message())
             else:
                 win.resizable(False, False)
+                copy_message = None
                 tk.Label(
                     outer, text=message, font=self._font(10),
                     bg=C["card"], fg=C["text"], justify=tk.LEFT, wraplength=420, anchor="w",
@@ -96,6 +122,13 @@ class DialogMixin:
                     activebackground=C["accent_hover"], relief=tk.FLAT, padx=16, pady=5,
                     command=lambda: close(False),
                 ).pack(side=tk.RIGHT)
+                if copy_message is not None:
+                    tk.Button(
+                        btn_row, text="Copy", font=self._font(10),
+                        bg="#f3f4f6", fg=C["text"], activebackground="#e5e7eb",
+                        relief=tk.FLAT, padx=14, pady=5,
+                        command=copy_message,
+                    ).pack(side=tk.RIGHT, padx=(0, 8))
 
             win.bind("<Escape>", lambda _e: close(False))
             win.protocol("WM_DELETE_WINDOW", lambda: close(False))
@@ -124,7 +157,13 @@ class DialogMixin:
             except OSError as err:
                 self._show_error("Lỗi", f"Không mở được trình soạn thảo:\n{err}")
 
-        def _show_srt_viewer(self, path: str | Path):
+        def _show_text_file_viewer(
+            self,
+            path: str | Path,
+            *,
+            title_prefix: str,
+            encoding_error: str,
+        ):
             path = Path(path)
             if not path.is_file():
                 self._show_warning("Không tìm thấy", f"Chưa có file:\n{path}")
@@ -135,16 +174,16 @@ class DialogMixin:
                 self._show_error("Lỗi đọc", str(err))
                 return
             except ValueError:
-                self._show_error("Lỗi đọc", "Không đọc được encoding của file SRT.")
+                self._show_error("Lỗi đọc", encoding_error)
                 return
 
             win = tk.Toplevel(self)
-            win.title(f"Xem SRT — {path.name}")
+            win.title(f"{title_prefix} — {path.name}")
             win.transient(self)
             win.configure(bg=C["card"])
             win.resizable(True, True)
             win.minsize(520, 360)
-            win.geometry("580x460")
+            win.geometry("640x480")
 
             outer = tk.Frame(win, bg=C["card"], padx=16, pady=12)
             outer.pack(fill=tk.BOTH, expand=True)
@@ -184,15 +223,60 @@ class DialogMixin:
             text.grid(row=0, column=0, sticky="nsew")
             scroll.grid(row=0, column=1, sticky="ns")
             text.insert("1.0", content)
-            text.configure(state=tk.DISABLED)
+            text.edit_modified(False)
+            saved_text = {"value": content}
+
+            def _current_text() -> str:
+                return text.get("1.0", "end-1c")
+
+            def _has_unsaved_changes() -> bool:
+                return _current_text() != saved_text["value"]
+
+            def _refresh_title():
+                suffix = " *" if _has_unsaved_changes() else ""
+                win.title(f"{title_prefix} — {path.name}{suffix}")
+
+            def mark_dirty(_event=None):
+                if not text.edit_modified():
+                    return
+                text.edit_modified(False)
+                _refresh_title()
+
+            text.bind("<<Modified>>", mark_dirty)
+
+            def save_content(*, silent: bool = False) -> bool:
+                body = _current_text()
+                try:
+                    path.write_text(body, encoding="utf-8")
+                except OSError as err:
+                    self._show_error("Lỗi ghi", f"Không lưu được file:\n{err}")
+                    return False
+                saved_text["value"] = body
+                text.edit_modified(False)
+                _refresh_title()
+                if not silent:
+                    self._show_info("Đã lưu", f"Đã ghi:\n{path}")
+                return True
 
             btn_row = tk.Frame(outer, bg=C["card"])
             btn_row.grid(row=2, column=0, sticky="e", pady=(12, 0))
 
-            def close():
+            def try_close():
+                if _has_unsaved_changes() and not self._ask_yes_no(
+                    "Chưa lưu",
+                    f"Nội dung đã sửa chưa lưu.\nĐóng mà không lưu?",
+                    kind="warning",
+                ):
+                    return
                 win.destroy()
 
             editor_label = "Mở Notepad" if sys.platform == "win32" else "Mở app ngoài"
+            tk.Button(
+                btn_row, text="Lưu", font=self._font(10, "bold"),
+                bg=C["accent"], fg="#ffffff", activebackground=C["accent_hover"],
+                relief=tk.FLAT, padx=14, pady=5,
+                command=save_content,
+            ).pack(side=tk.RIGHT)
             tk.Button(
                 btn_row, text=editor_label, font=self._font(10),
                 bg="#f3f4f6", fg=C["text"], activebackground="#e5e7eb",
@@ -200,14 +284,30 @@ class DialogMixin:
                 command=lambda: self._open_with_text_editor(path),
             ).pack(side=tk.RIGHT, padx=(8, 0))
             tk.Button(
-                btn_row, text="Đóng", font=self._font(10, "bold"),
-                bg=C["accent"], fg="#ffffff", activebackground=C["accent_hover"],
-                relief=tk.FLAT, padx=16, pady=5, command=close,
-            ).pack(side=tk.RIGHT)
+                btn_row, text="Đóng", font=self._font(10),
+                bg="#f3f4f6", fg=C["text"], activebackground="#e5e7eb",
+                relief=tk.FLAT, padx=16, pady=5, command=try_close,
+            ).pack(side=tk.RIGHT, padx=(8, 0))
 
-            win.bind("<Escape>", lambda _e: close())
-            win.protocol("WM_DELETE_WINDOW", close)
+            win.bind("<Escape>", lambda _e: try_close())
+            win.bind("<Control-s>", lambda _e: save_content(silent=True))
+            win.bind("<Control-S>", lambda _e: save_content(silent=True))
+            win.protocol("WM_DELETE_WINDOW", try_close)
             self._center_on_parent(win)
+
+        def _show_srt_viewer(self, path: str | Path):
+            self._show_text_file_viewer(
+                path,
+                title_prefix="Xem SRT",
+                encoding_error="Không đọc được encoding của file SRT.",
+            )
+
+        def _show_prompts_viewer(self, path: str | Path):
+            self._show_text_file_viewer(
+                path,
+                title_prefix="Xem file tạo ảnh",
+                encoding_error="Không đọc được encoding của file tạo ảnh.",
+            )
 
         def _show_info(self, title, message):
             self._dialog(title, message, kind="info", ask=False)

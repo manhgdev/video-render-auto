@@ -25,6 +25,7 @@ class TestParsePromptScenes:
     def test_srt_locked_format(self, tmp_path: Path):
         text = (
             "001_[00:00.00-00:06.33] Scene one\n"
+            "\n"
             "002_[00:06.33-00:12.40] Scene two\n"
         )
         path = tmp_path / "prompts.txt"
@@ -55,6 +56,21 @@ class TestParsePromptScenes:
         path.write_text("no timestamps here\n", encoding="utf-8")
         with pytest.raises(RuntimeError, match="Không tìm thấy scene"):
             parse_prompt_scenes(path, 60.0)
+
+    def test_parse_format_chuan(self, tmp_path: Path):
+        text = (
+            "001_[00.00.00-00.00.01.92]\n"
+            "CHARACTER BIBLE:\n"
+            "...\n"
+            "\n"
+            "029_[00.02.00-00.02.04.64]\n"
+            "CHARACTER BIBLE:\n"
+        )
+        path = tmp_path / "prompts.txt"
+        path.write_text(text, encoding="utf-8")
+        scenes = parse_prompt_scenes(path, 9999.0)
+        assert scenes[0] == (1, 0.0, pytest.approx(1.92))
+        assert scenes[1] == (29, 120.0, pytest.approx(124.64))
 
     def test_skips_character_reference(self, tmp_path: Path):
         text = (

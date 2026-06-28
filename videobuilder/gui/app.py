@@ -3,6 +3,7 @@
 
 import tkinter as tk
 
+from videobuilder.core.env_config import load_env
 from videobuilder.core.ffmpeg_setup import ensure_ffmpeg_on_path
 from videobuilder.core.pipeline import DEFAULT_PREVIEW_SECONDS, ENCODE_QUALITY_OPTIONS, ENCODER_OVERRIDE_OPTIONS, ZOOM_LEVEL_OPTIONS, detect_video_encoder
 from videobuilder.core.create_srt import DEFAULT_LANGUAGE, DEFAULT_MODEL, DEFAULT_SRT_SPLIT, SRT_SPLIT_KEY_TO_LABEL
@@ -36,13 +37,23 @@ class VideoBuilderApp(
         def __init__(self):
             super().__init__()
             self.title(window_title())
-            self.geometry("740x580")
-            self.minsize(680, 500)
+            self.geometry("880x640")
+            self.minsize(760, 540)
             self.configure(bg=C["bg"])
+
+            load_env()
+            from videobuilder.core.audio_pipeline import apply_env_api_keys
+
+            apply_env_api_keys()
+            from videobuilder.core.groq_models import load_cached_groq_models
+
+            load_cached_groq_models(force_reload=True)
 
             self.images_var = tk.StringVar()
             self.audio_var = tk.StringVar()
             self.prompts_var = tk.StringVar()
+            self.prompts_dir_var = tk.StringVar()
+            self.prompts_name_var = tk.StringVar(value="subtitle")
             self.output_var = tk.StringVar(value=str(default_output_path()))
             self.output_dir_var = tk.StringVar()
             self.output_name_var = tk.StringVar(value=OUTPUT_STEM)
@@ -69,6 +80,12 @@ class VideoBuilderApp(
             self.srt_output_var = tk.StringVar()
             self.srt_output_dir_var = tk.StringVar()
             self.srt_output_name_var = tk.StringVar(value="subtitle")
+            self.srt_groq_api_key_var = tk.StringVar()
+            self.srt_gemini_api_key_var = tk.StringVar()
+            self.srt_prompts_output_var = tk.StringVar()
+            self.srt_prompts_output_dir_var = tk.StringVar()
+            self.srt_prompts_output_name_var = tk.StringVar(value="subtitle")
+            self.srt_gen_prompts_var = tk.BooleanVar(value=True)
             self.srt_model_var = tk.StringVar(value=DEFAULT_MODEL)
             self.srt_language_var = tk.StringVar(value=DEFAULT_LANGUAGE)
             self.srt_split_var = tk.StringVar(value=SRT_SPLIT_KEY_TO_LABEL[DEFAULT_SRT_SPLIT])
@@ -91,11 +108,21 @@ class VideoBuilderApp(
             self.ffmpeg_ok = False
             self.last_output = None
             self.last_srt_output = None
+            self.last_prompts_output = None
             self.srt_running = False
             self.srt_paused = False
             self.whisper_ok = False
             self.whisper_installing = False
-            self.whisper_status_var = tk.StringVar(value="Đang kiểm tra Whisper...")
+            self.srt_groq_key_entry = None
+            self.srt_groq_key_toggle_btn = None
+            self.srt_groq_recheck_btn = None
+            self.srt_gemini_key_entry = None
+            self.srt_gemini_key_toggle_btn = None
+            self.srt_gemini_recheck_btn = None
+            self._groq_key_hidden = True
+            self._gemini_key_hidden = True
+            self._srt_packages_auto_started = False
+            self.whisper_status_var = tk.StringVar(value="Đang kiểm tra Groq / Whisper...")
             self._progress_colors: ProgressColors | None = None
             self._render_bar: CanvasProgressBar | None = None
             self._render_tracker: SmoothProgressTracker | None = None
@@ -110,6 +137,7 @@ class VideoBuilderApp(
             self._build_ui()
             self._load_settings()
             self._sync_output_display(from_output_var=True)
+            self._sync_prompts_display(from_output_var=True)
             self._refresh_ffmpeg_status()
             self._sync_duration_from_audio()
             self.after(300, self._sync_duration_from_audio)

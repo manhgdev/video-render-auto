@@ -120,6 +120,12 @@ def short_srt_status(message: str) -> str:
         return "Đang xử lý..."
     if msg.startswith(("Hoàn thành", "Xong")):
         return "Hoàn thành!"
+    if msg.startswith("Groq"):
+        return "Groq nhận dạng..."
+    if msg.startswith("Chuẩn bị audio cho Groq") or msg.startswith("Chuẩn bị Groq"):
+        return "Chuẩn bị Groq..."
+    if msg.startswith("Chuẩn bị"):
+        return "Chuẩn bị..."
     if msg.startswith("Tải model"):
         return "Tải model Whisper..."
     if msg.startswith("Chuyển sang CPU"):
@@ -204,16 +210,30 @@ class SmoothProgressTracker:
 
     def ingest(self, pct: float, *, touch_time: bool = True) -> None:
         pct = clamp_pct(pct)
+        if pct >= 100:
+            self._reported = 100.0
+            self._display = 100.0
+            self._last_report_time = time.time()
+            self._bar.paint(100.0)
+            self._set_percent_label(100.0)
+            self.stop()
+            return
         if pct >= self._reported:
-            self._reported = max(1.0, pct) if pct < 100 else 100.0
+            self._reported = max(1.0, pct)
             if touch_time:
                 self._last_report_time = time.time()
         elif touch_time:
             self._last_report_time = time.time()
-        if pct >= 100:
-            self._reported = 100.0
-            self._last_report_time = time.time()
         self.ensure_animation()
+
+    def finish(self, pct: float = 100.0) -> None:
+        """Chốt thanh tiến độ (render xong / hủy reset)."""
+        self.stop()
+        pct = clamp_pct(pct)
+        self._reported = pct
+        self._display = pct
+        self._bar.paint(pct)
+        self._set_percent_label(pct)
 
     def ensure_animation(self) -> None:
         if self._anim_id is None:
@@ -242,7 +262,7 @@ class SmoothProgressTracker:
             display = prev
 
         display = max(prev, display)
-        display = min(100.0 if reported >= 100 else 99.8, display)
+        display = min(99.5 if reported < 100 else 100.0, display)
 
         self._display = display
         self._bar.paint(display)

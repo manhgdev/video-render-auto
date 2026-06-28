@@ -10,14 +10,30 @@ from videobuilder.core.create_srt import (
     ensure_whisper,
     is_cublas_dll_error,
     is_gpu_runtime_error,
+    is_groq_rate_limit,
+    groq_api_key,
     normalize_output_path,
     normalize_srt_split,
     refine_srt_cues,
     resplit_srt,
     SRT_SPLIT_PARAMS,
     _group_words_to_cues_sentence,
+    _groq_response_to_cues,
+    _groq_model_for_language,
+    _groq_skip_segment,
+    _groq_collect_words,
+    _groq_text_is_hallucination,
+    _groq_filter_cues,
+    _groq_prompt_from_cues,
+    _groq_trim_prompt,
+    GROQ_PROMPT_API_CHAR_MAX,
+    GROQ_PROMPT_MAX_CHARS,
+    GROQ_WHISPER_MODEL,
+    GROQ_WHISPER_MODEL_VI,
+    set_groq_api_key,
     whisper_model_cached,
     whisper_model_status_line,
+    GROQ_API_KEY_ENV,
 )
 from videobuilder.core.pipeline import parse_srt_file, write_srt_from_cues
 from videobuilder.core.pipeline import ProcessController
@@ -45,7 +61,7 @@ def test_whisper_numpy_message_detects_numpy2(monkeypatch):
     monkeypatch.setattr(mod, "numpy_major_version", lambda: 2)
     msg = mod.whisper_numpy_message()
     assert msg is not None
-    assert "numpy<2" in msg
+    assert "Cài đặt" in msg
 
 
 def test_check_whisper_reports_status():
@@ -55,6 +71,168 @@ def test_check_whisper_reports_status():
     assert "ok" in result
     assert "message" in result
     assert isinstance(result["message"], str)
+
+
+def test_is_groq_rate_limit():
+    class RateLimitError(Exception):
+        pass
+
+    assert is_groq_rate_limit(RateLimitError("quota"))
+    assert is_groq_rate_limit(RuntimeError("HTTP 429 Too Many Requests"))
+    assert is_groq_rate_limit(RuntimeError("rate limit exceeded"))
+    assert is_groq_rate_limit(RuntimeError("quota exceeded"))
+    assert not is_groq_rate_limit(RuntimeError("connection reset"))
+
+
+def test_groq_api_key_from_env(monkeypatch):
+    set_groq_api_key(None)
+    monkeypatch.delenv(GROQ_API_KEY_ENV, raising=False)
+    assert groq_api_key() is None
+    monkeypatch.setenv(GROQ_API_KEY_ENV, "  gsk_env  ")
+    assert groq_api_key() == "gsk_env"
+    set_groq_api_key("  gsk_ui  ")
+    assert groq_api_key() == "gsk_ui"
+    set_groq_api_key("")
+    assert groq_api_key() == "gsk_env"
+
+
+def test_groq_response_to_cues_segments():
+    result = {
+        "segments": [
+            {"start": 0.0, "end": 1.5, "text": " Xin chào"},
+            {"start": 1.5, "end": 3.0, "text": " thế giới"},
+        ]
+    }
+    cues = _groq_response_to_cues(result, offset=10.0)
+    assert len(cues) == 2
+    assert cues[0] == (10.0, 11.5, "Xin chào")
+    assert cues[1][0] == 11.5
+
+
+def test_groq_model_for_language(monkeypatch, tmp_path):
+    from videobuilder.core import groq_models as gm
+
+    monkeypatch.setattr(gm, "_groq_model_cache_path", lambda: tmp_path / "cache.json")
+    gm.clear_groq_model_cache()
+    assert _groq_model_for_language("vi") == GROQ_WHISPER_MODEL_VI
+    assert _groq_model_for_language("en") == GROQ_WHISPER_MODEL
+    assert _groq_model_for_language("") == GROQ_WHISPER_MODEL
+
+
+def test_groq_skip_segment_hallucination():
+    assert _groq_skip_segment({"no_speech_prob": 0.9, "text": "garbage"})
+    assert not _groq_skip_segment({"no_speech_prob": 0.2, "text": "Xin chào"})
+    assert _groq_skip_segment(
+        {"no_speech_prob": 0.5, "compression_ratio": 3.0, "text": "..."}
+    )
+    assert _groq_skip_segment(
+        {
+            "start": 0.0,
+            "end": 30.0,
+            "text": "Nội dung tự nhiên, câu hoàn chỉnh.",
+            "no_speech_prob": 0.1,
+        }
+    )
+
+
+def test_groq_text_is_hallucination():
+    assert _groq_text_is_hallucination("Nội dung tự nhiên, câu hoàn chỉnh.", duration=30.0)
+    assert _groq_text_is_hallucination("N dung t nhi c ho ch", duration=30.0)
+    assert not _groq_text_is_hallucination(
+        "Bạn mở mắt khi trời vẫn còn sám.",
+        duration=2.0,
+    )
+
+
+def test_groq_filter_cues_drops_prompt_echo():
+    cues = [
+        (0.0, 2.0, "Xin chào"),
+        (2.0, 32.0, "Nội dung tự nhiên, câu hoàn chỉnh."),
+        (32.0, 35.0, "Tiếp theo"),
+    ]
+    filtered = _groq_filter_cues(cues)
+    assert len(filtered) == 2
+    assert filtered[0][2] == "Xin chào"
+    assert filtered[1][2] == "Tiếp theo"
+
+
+def test_groq_trim_prompt_respects_api_limit():
+    long_text = "Câu tiếng Việt có dấu. " * 200
+    trimmed = _groq_trim_prompt(long_text)
+    assert len(trimmed) <= GROQ_PROMPT_API_CHAR_MAX
+    assert len(trimmed) <= GROQ_PROMPT_MAX_CHARS
+    assert trimmed.endswith(".")
+
+
+def test_groq_prompt_from_cues_limits_context():
+    cues = [(float(i), float(i + 1), f"Câu số {i} trong transcript.") for i in range(40)]
+    prompt = _groq_prompt_from_cues(cues)
+    assert len(prompt) <= GROQ_PROMPT_MAX_CHARS
+    assert "Câu số 39" in prompt
+    assert "Câu số 0" not in prompt
+
+
+def test_groq_response_splits_long_segment():
+    result = {
+        "segments": [
+            {
+                "start": 0.0,
+                "end": 20.0,
+                "text": " Một câu dài về cuộc săn trong rừng cổ đại.",
+                "no_speech_prob": 0.1,
+                "words": [
+                    {"word": " Một", "start": 0.0, "end": 1.0},
+                    {"word": " câu", "start": 1.0, "end": 2.0},
+                    {"word": " dài", "start": 2.0, "end": 3.0},
+                    {"word": " về", "start": 3.0, "end": 4.0},
+                    {"word": " cuộc", "start": 4.0, "end": 5.0},
+                    {"word": " săn.", "start": 5.0, "end": 6.0},
+                ],
+            }
+        ]
+    }
+    cues = _groq_response_to_cues(result, offset=100.0)
+    assert len(cues) >= 1
+    assert cues[0][0] == 100.0
+
+
+def test_groq_collect_words():
+    result = {
+        "segments": [
+            {
+                "start": 0.0,
+                "end": 2.0,
+                "text": "hello",
+                "words": [
+                    {"word": " hello", "start": 0.0, "end": 1.0},
+                    {"word": " world", "start": 1.0, "end": 2.0},
+                ],
+            }
+        ]
+    }
+    words = _groq_collect_words(result, offset=5.0)
+    assert len(words) == 2
+    assert words[0].start == 5.0
+    assert words[1].start == 6.0
+
+
+def test_check_whisper_with_groq_key(monkeypatch):
+    from videobuilder.core import create_srt as mod
+    from videobuilder.core.create_srt import check_whisper
+
+    mod.set_groq_api_key("gsk_test")
+    monkeypatch.setattr(mod, "groq_client_available", lambda: True)
+    monkeypatch.setattr(mod, "srt_packages_status", lambda: {"needs_install": False, "groq_ok": True, "whisper_ok": True})
+    monkeypatch.setattr(
+        mod,
+        "_check_local_whisper",
+        lambda model=None: {"ok": True, "message": "local ok", "model_cached": True, "device": "CPU"},
+    )
+    result = check_whisper("small")
+    assert result["ok"] is True
+    assert result.get("groq") is True
+    assert result.get("needs_install") is False
+    assert "Groq" in result["message"]
 
 
 def test_ensure_whisper_raises_without_package():
@@ -425,6 +603,7 @@ def test_run_cancellable_respects_cancel():
 def test_check_whisper_model_not_cached(tmp_path, monkeypatch):
     from videobuilder.core import create_srt as mod
 
+    monkeypatch.setattr(mod, "groq_api_key", lambda: None)
     monkeypatch.setattr(mod.Path, "home", lambda: tmp_path)
     monkeypatch.setattr(mod, "cuda_available", lambda: True)
     try:
@@ -442,6 +621,7 @@ def test_check_whisper_model_not_cached(tmp_path, monkeypatch):
 def test_check_whisper_model_cached(tmp_path, monkeypatch):
     from videobuilder.core import create_srt as mod
 
+    monkeypatch.setattr(mod, "groq_api_key", lambda: None)
     monkeypatch.setattr(mod, "_huggingface_hub_dir", lambda: tmp_path / "hub")
     monkeypatch.setattr(mod, "cuda_available", lambda: False)
     snap = tmp_path / "hub" / "models--Systran--faster-whisper-small" / "snapshots" / "abc"

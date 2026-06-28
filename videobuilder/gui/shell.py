@@ -59,6 +59,7 @@ class ShellMixin:
             self.cancel_btn.pack_forget()
             self.open_video_btn.pack_forget()
             self.open_folder_btn.pack_forget()
+            self.open_prompts_btn.pack_forget()
 
             if is_srt:
                 self.srt_create_btn.pack(side=tk.LEFT)
@@ -69,9 +70,9 @@ class ShellMixin:
             self.pause_btn.pack(side=tk.LEFT, padx=(8, 0))
             self.cancel_btn.pack(side=tk.LEFT, padx=(4, 0))
             self.open_video_btn.pack(side=tk.LEFT, padx=(8, 0))
-            self.open_folder_btn.pack(side=tk.LEFT, padx=(4, 0))
 
             if is_srt:
+                self.open_prompts_btn.pack(side=tk.LEFT, padx=(4, 0))
                 self.open_video_btn.configure(text="Mở srt", command=self._open_srt)
                 self._update_srt_open_buttons()
                 self._update_srt_controls_locked()
@@ -84,6 +85,8 @@ class ShellMixin:
                 else:
                     self.preview_btn.configure(state=tk.DISABLED)
 
+            self.open_folder_btn.pack(side=tk.LEFT, padx=(4, 0))
+
         def _show_tab(self, key: str):
             if key == getattr(self, "_active_tab", None):
                 return
@@ -95,6 +98,7 @@ class ShellMixin:
             if key == "srt":
                 self._apply_footer_mode("srt")
                 self._refresh_whisper_status()
+                self._ensure_srt_packages_auto()
             else:
                 self._apply_footer_mode("render")
             track = C["tab_track"]
@@ -333,6 +337,9 @@ class ShellMixin:
             self.open_video_btn.pack(side=tk.LEFT, padx=(8, 0))
             self.open_folder_btn = ttk.Button(row_btns, text="Thư mục", command=self._open_folder, state=tk.DISABLED)
             self.open_folder_btn.pack(side=tk.LEFT, padx=(4, 0))
+            self.open_prompts_btn = ttk.Button(
+                row_btns, text="Mở tạo ảnh", command=self._open_prompts, state=tk.DISABLED,
+            )
             self.srt_create_btn = tk.Button(
                 row_btns, text="Tạo SRT", font=self._font(10, "bold"), bg=C["accent"], fg="#ffffff",
                 activebackground=C["accent_hover"], activeforeground="#ffffff", relief=tk.FLAT,
@@ -354,8 +361,9 @@ class ShellMixin:
             tab_files = self._build_scroll_area(tab_files_shell)
             tab_opts = self._build_scroll_area(tab_opts_shell)
             tab_srt = self._build_scroll_area(tab_srt_shell)
-            tab_contact = ttk.Frame(tab_contact_shell, style="Card.TFrame", padding=24)
-            tab_contact.pack(fill=tk.BOTH, expand=True)
+            tab_contact_scroll = self._build_scroll_area(tab_contact_shell)
+            tab_contact = ttk.Frame(tab_contact_scroll, style="Card.TFrame", padding=18)
+            tab_contact.pack(fill=tk.BOTH, expand=True, anchor="nw")
             self._build_contact_tab(tab_contact)
             self._build_srt_tab(tab_srt)
             self._sync_srt_model_hint()
@@ -368,7 +376,7 @@ class ShellMixin:
                 help_key="audio", on_clear=self._sync_duration_from_audio,
             )
             audio_entry.bind("<FocusOut>", lambda _e: self._sync_duration_from_audio())
-            self._path_field(tab_files, 2, "File prompt", self.prompts_var, self._pick_prompts, help_key="prompts")
+            self._prompts_export_path_field(tab_files, 2)
             self._output_path_field(tab_files, 3)
             self._path_field(tab_files, 4, "File phụ đề", self.subtitle_var, self._pick_subtitle, help_key="subtitle")
             self._files_pair_entries(
