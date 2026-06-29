@@ -143,6 +143,22 @@ def test_groq_text_is_hallucination():
         "Bạn mở mắt khi trời vẫn còn sám.",
         duration=2.0,
     )
+    assert not _groq_text_is_hallucination(
+        "You are walking through a frozen valley when you see the footprints.",
+        duration=28.0,
+        strict=True,
+    )
+    assert _groq_text_is_hallucination(
+        "Hãy subscribe cho kênh Ghiền Mì Gõ",
+        duration=5.0,
+    )
+
+
+def test_groq_response_language_from_verbose_json():
+    from videobuilder.core.create_srt import _groq_response_language
+
+    assert _groq_response_language({"language": "en"}) == "en"
+    assert _groq_response_language({"language": "vi"}) == "vi"
 
 
 def test_groq_filter_cues_drops_prompt_echo():
@@ -651,14 +667,14 @@ def test_find_cue_timeline_gaps_detects_short_srt_hole():
 
 def test_groq_relaxed_filter_keeps_sparse_real_speech():
     text = "Một hai ba bốn năm sáu."
-    assert _groq_text_is_hallucination(text, duration=17.0, strict=True)
+    assert not _groq_text_is_hallucination(text, duration=17.0, strict=True)
     assert not _groq_text_is_hallucination(text, duration=17.0, strict=False)
     seg = {
         "start": 53.0,
         "end": 70.0,
         "text": text,
-        "no_speech_prob": 0.1,
+        "no_speech_prob": 0.5,
     }
-    assert _groq_skip_segment(seg, strict=True)
     assert not _groq_skip_segment(seg, strict=False)
+    assert _groq_text_is_hallucination("Ừ.", duration=35.0, strict=True)
 

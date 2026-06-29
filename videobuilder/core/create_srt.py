@@ -88,11 +88,64 @@ GROQ_PROMPT_ECHO_MARKERS = (
     "câu hoàn chỉnh",
     "phụ đề tiếng việt",
     "có dấu đầy đủ",
+    "hãy subscribe",
+    "subscribe cho kênh",
+    "để không bỏ lỡ",
+    "ghiền mì gõ",
 )
+GROQ_GAP_RECOVER_MAX_SEC = 45.0
 # Ngưỡng hole timeline — khớp generate_prompts (tránh import vòng)
 _SRT_OPENING_DENSE_SEC = 30.0
 _SRT_GAP_OPENING_SEC = 4.5
 _SRT_GAP_BODY_SEC = 7.0
+
+_VN_TONE_RE = re.compile(
+    r"[àáảãạăắằẳẵặâấầẩẫậèéẻẽẹêếềểễệìíỉĩịòóỏõọôốồổỗộơớờởỡợùúủũụưứừửữựỳýỷỹỵđ]",
+    re.I,
+)
+
+
+def _guess_language_from_cues(cues: list[tuple[float, float, str]]) -> str:
+    """Heuristic: chọn 'vi' nếu thấy nhiều dấu tiếng Việt, ngược lại 'en'.
+
+    Mục tiêu là giúp chế độ auto của Groq ít rớt cue trên audio dài/nhiễu.
+    """
+    sample = " ".join((t or "").strip() for *_r, t in cues[-12:])
+    if not sample.strip():
+        return ""
+    if _VN_TONE_RE.search(sample):
+        return "vi"
+    # Nếu có chữ cái Latin mà không có dấu VN, ưu tiên en
+    if re.search(r"[a-z]", sample, re.I):
+        return "en"
+    return ""
+
+
+def _groq_response_language(result) -> str:
+    """Ngôn ngữ Groq tự detect — dùng cho chunk/gap-fill khi user chọn auto."""
+    lang = getattr(result, "language", None)
+    if lang is None and isinstance(result, dict):
+        lang = result.get("language")
+    text = (lang or "").strip().lower()
+    if text in ("vi", "en", "ja", "ko", "zh", "fr", "de", "es"):
+        return text
+    if text.startswith("zh"):
+        return "zh"
+    return ""
+
+
+def _split_time_range(start: float, end: float, *, max_span: float) -> list[tuple[float, float]]:
+    if end - start <= max_span:
+        return [(start, end)]
+    out: list[tuple[float, float]] = []
+    cursor = start
+    while cursor < end - 0.05:
+        seg_end = min(end, cursor + max_span)
+        out.append((cursor, seg_end))
+        cursor = seg_end
+    return out
+
+
 WHISPER_MODEL_INFO = {
     "tiny": ("~75 MB", "Nhanh nhất, độ chính xác thấp"),
     "base": ("~145 MB", "Nhanh, phù hợp audio rõ"),
@@ -1502,19 +1555,12 @@ def _groq_text_is_hallucination(
 
     words = compact.split()
     word_count = len(words)
-    if duration >= 15.0 and word_count <= 6:
+    # Chỉ lọc đoạn rất thưa — không coi tiếng Anh dài là ảo giác.
+    if duration >= 30.0 and word_count <= 2:
         return True
-    if word_count >= 4:
+    if word_count >= 6 and duration >= 12.0:
         tiny = sum(1 for w in words if len(w) <= 2)
-        if tiny / word_count > 0.55 and duration >= 8.0:
-            return True
-    if duration >= 20.0 and word_count >= 8:
-        has_vn_tone = re.search(
-            r"[àáảãạăắằẳẵặâấầẩẫậèéẻẽẹêếềểễệìíỉĩịòóỏõọôốồổỗộơớờởỡợùúủũụưứừửữựỳýỷỹỵđ]",
-            compact,
-            re.I,
-        )
-        if not has_vn_tone:
+        if tiny / word_count > 0.72:
             return True
     return False
 
@@ -1523,7 +1569,7 @@ def _groq_prompt_from_cues(cues: list[tuple[float, float, str]]) -> str:
     """Chỉ dùng vài cue cuối chunk làm prompt — tránh vượt giới hạn Groq."""
     parts: list[str] = []
     for _, _, text in cues:
-        if _groq_text_is_hallucination(text):
+        if _groq_text_is_hallucination(text, strict=False):
             continue
         cleaned = text.strip()
         if cleaned:
@@ -1564,9 +1610,9 @@ def _groq_skip_segment(seg, *, strict: bool = True) -> bool:
     else:
         nsp = getattr(seg, "no_speech_prob", None)
         cr = getattr(seg, "compression_ratio", None)
-    if nsp is not None and float(nsp) > 0.75:
+    if nsp is not None and float(nsp) > 0.85:
         return True
-    if duration >= 18.0 and nsp is not None and float(nsp) > 0.35:
+    if duration >= 25.0 and nsp is not None and float(nsp) > 0.65:
         return True
     if (
         cr is not None
@@ -1823,8 +1869,29 @@ def _ffmpeg_to_flac_mono16k(
     cmd.extend(["-i", str(audio_path)])
     if duration is not None and duration > 0:
         cmd.extend(["-t", str(duration)])
-    cmd.extend(["-ac", "1", "-ar", "16000", "-c:a", "flac", str(dest)])
+    # Groq giới hạn upload ~25MB. Nếu dùng FLAC lossless, file có thể phình to dù audio gốc (mp3) nhỏ.
+    # Dùng mp3 mono 16k bitrate thấp để giữ file nhỏ và ổn định upload.
+    cmd.extend(
+        [
+            "-ac",
+            "1",
+            "-ar",
+            "16000",
+            "-c:a",
+            "libmp3lame",
+            "-b:a",
+            "64k",
+            str(dest),
+        ]
+    )
     _run_ffmpeg_convert(cmd, process_controller=process_controller)
+
+
+def _format_bytes(n: int) -> str:
+    try:
+        return f"{n / (1024 * 1024):.2f} MB ({n:,} bytes)"
+    except Exception:
+        return f"{n} bytes"
 
 
 def _groq_prepare_chunks(
@@ -1845,23 +1912,38 @@ def _groq_prepare_chunks(
         else:
             duration = max_seconds
 
-    total = duration if duration > 0 else GROQ_TRANSCRIBE_CHUNK_SECONDS
+    # Nếu không đọc được duration audio gốc (ffprobe fail), không được tự ý cắt 8 phút đầu.
+    # Thay vào đó: cắt tuần tự theo chunk_step cho tới khi chunk gần như rỗng (đã hết audio).
+    total = duration if duration > 0 else 0.0
     temps: list[Path] = []
     chunks: list[tuple[Path, float]] = []
     offset = 0.0
     chunk_step = float(GROQ_TRANSCRIBE_CHUNK_SECONDS)
-    need_split = total > chunk_step + 0.5
+    need_split = (total > 0 and total > chunk_step + 0.5) or (total <= 0)
 
     if need_split:
         _log(
             log_callback,
-            f"Chia ~{chunk_step / 60:.0f} phút/request cho Groq ({total / 60:.1f} phút)...",
+            (
+                f"Chia ~{chunk_step / 60:.0f} phút/request cho Groq"
+                + (f" ({total / 60:.1f} phút)..." if total > 0 else "...")
+            ),
             "info",
         )
 
-    while offset < total - 0.01:
-        seg_dur = min(chunk_step, total - offset)
-        fd, tmp = tempfile.mkstemp(suffix=".flac")
+    def reached_limit() -> bool:
+        return bool(max_seconds is not None and offset >= float(max_seconds) - 0.01)
+
+    while True:
+        if total > 0:
+            if offset >= total - 0.01:
+                break
+            seg_dur = min(chunk_step, total - offset)
+        else:
+            if reached_limit():
+                break
+            seg_dur = chunk_step
+        fd, tmp = tempfile.mkstemp(suffix=".mp3")
         os.close(fd)
         chunk_path = Path(tmp)
         temps.append(chunk_path)
@@ -1872,15 +1954,35 @@ def _groq_prepare_chunks(
             duration=seg_dur,
             process_controller=process_controller,
         )
+        # Nếu duration gốc không rõ, dùng duration chunk để biết đã hết audio chưa.
+        if total <= 0:
+            try:
+                chunk_dur = get_media_duration(chunk_path)
+            except Exception:
+                chunk_dur = 0.0
+            if chunk_dur <= 0.25:
+                chunk_path.unlink(missing_ok=True)
+                temps.remove(chunk_path)
+                break
+            if max_seconds is not None:
+                chunk_dur = min(chunk_dur, max(0.0, float(max_seconds) - offset))
+                if chunk_dur <= 0.25:
+                    chunk_path.unlink(missing_ok=True)
+                    temps.remove(chunk_path)
+                    break
         size = chunk_path.stat().st_size
         if size > GROQ_MAX_UPLOAD_BYTES:
             chunk_path.unlink(missing_ok=True)
             temps.remove(chunk_path)
             raise CreateSrtError(
-                f"Đoạn audio {offset / 60:.1f} phút vượt giới hạn 25MB của Groq — "
-                "thử rút ngắn preview hoặc nén audio."
+                (
+                    f"Đoạn audio {offset / 60:.1f} phút vượt giới hạn upload của Groq "
+                    f"({ _format_bytes(size) } > { _format_bytes(GROQ_MAX_UPLOAD_BYTES) }) — "
+                    "thử rút ngắn preview."
+                )
             )
         chunks.append((chunk_path, offset))
+        # Nếu duration gốc không rõ, offset vẫn tăng theo chunk_step để tiến về cuối file.
         offset += seg_dur
 
     if not chunks:
@@ -1963,12 +2065,13 @@ def _groq_transcribe_chunk(
         if groq_whisper_active_model(language) != model and log_callback:
             _log(log_callback, f"Groq STT: dùng {model}", "info")
         set_active_whisper_model(model, language=language)
+        detected = _groq_response_language(result)
         cues = _groq_filter_cues(
             _groq_response_to_cues(result, offset, strict=strict),
             strict=strict,
         )
         words = _groq_collect_words(result, offset, strict=strict)
-        return cues, words
+        return cues, words, detected
 
     raise GroqRateLimitError(
         "Groq STT rate limit — đã thử hết model: "
@@ -1984,10 +2087,11 @@ def _groq_recover_missing_cues(
     *,
     language: str,
     audio_duration: float,
+    detected_language: str = "",
     process_controller: ProcessController | None,
     log_callback=None,
 ) -> tuple[list[tuple[float, float, str]], list[_GroqWord]]:
-    """Transcribe lại đoạn STT thiếu — lần đầu dùng lọc ảo giác gắt có thể bỏ sót lời thật."""
+    """Transcribe lại đoạn STT thiếu — chia nhỏ gap, dùng ngôn ngữ Groq detect nếu auto."""
     gaps = _find_cue_timeline_gaps(cues, audio_duration)
     if not gaps:
         return cues, []
@@ -1996,54 +2100,64 @@ def _groq_recover_missing_cues(
     extra_words: list[_GroqWord] = []
     temps: list[Path] = []
     sorted_cues = sorted(cues, key=lambda c: c[0])
+    recover_lang = language or detected_language or _guess_language_from_cues(sorted_cues)
 
     try:
         for gap_start, gap_end in gaps:
-            gap_dur = gap_end - gap_start
-            if gap_dur < 1.0:
-                continue
-            _log(
-                log_callback,
-                (
-                    f"STT thiếu {gap_start:.1f}s→{gap_end:.1f}s ({gap_dur:.1f}s) "
-                    "— transcribe lại với lọc nhẹ hơn..."
-                ),
-                "warn",
+            sub_gaps = _split_time_range(
+                gap_start, gap_end, max_span=GROQ_GAP_RECOVER_MAX_SEC,
             )
-            fd, tmp = tempfile.mkstemp(suffix=".flac")
-            os.close(fd)
-            chunk_path = Path(tmp)
-            temps.append(chunk_path)
-            _ffmpeg_to_flac_mono16k(
-                audio_path,
-                chunk_path,
-                start=gap_start,
-                duration=gap_dur,
-                process_controller=process_controller,
-            )
-            prior = [c for c in sorted_cues if c[1] <= gap_start + 0.08]
-            prompt_tail = _groq_prompt_from_cues(prior[-GROQ_PROMPT_MAX_CUES:] if prior else sorted_cues[:3])
-            gap_cues, gap_words = _groq_transcribe_chunk(
-                client,
-                chunk_path,
-                language,
-                gap_start,
-                process_controller,
-                prompt_tail=prompt_tail,
-                log_callback=log_callback,
-                strict=False,
-            )
-            gap_cues = _groq_filter_cues(gap_cues, strict=True)
-            if gap_cues:
-                recovered.extend(gap_cues)
-                extra_words.extend(gap_words)
-                _log(log_callback, f"  → bổ sung {len(gap_cues)} cue", "info")
-            else:
+            for sub_start, sub_end in sub_gaps:
+                gap_dur = sub_end - sub_start
+                if gap_dur < 1.0:
+                    continue
                 _log(
                     log_callback,
-                    "  → vẫn không có lời (im lặng thật hoặc cần sửa SRT thủ công)",
+                    (
+                        f"STT thiếu {sub_start:.1f}s→{sub_end:.1f}s ({gap_dur:.1f}s) "
+                        "— transcribe lại..."
+                    ),
                     "warn",
                 )
+                fd, tmp = tempfile.mkstemp(suffix=".mp3")
+                os.close(fd)
+                chunk_path = Path(tmp)
+                temps.append(chunk_path)
+                _ffmpeg_to_flac_mono16k(
+                    audio_path,
+                    chunk_path,
+                    start=sub_start,
+                    duration=gap_dur,
+                    process_controller=process_controller,
+                )
+                prior = [c for c in sorted_cues if c[1] <= sub_start + 0.08]
+                prompt_tail = _groq_prompt_from_cues(
+                    prior[-GROQ_PROMPT_MAX_CUES:] if prior else sorted_cues[:3]
+                )
+                gap_cues, gap_words, sub_detected = _groq_transcribe_chunk(
+                    client,
+                    chunk_path,
+                    recover_lang or language,
+                    sub_start,
+                    process_controller,
+                    prompt_tail=prompt_tail,
+                    log_callback=log_callback,
+                    strict=False,
+                )
+                if not recover_lang and sub_detected:
+                    recover_lang = sub_detected
+                gap_cues = _groq_filter_cues(gap_cues, strict=False)
+                if gap_cues:
+                    recovered.extend(gap_cues)
+                    extra_words.extend(gap_words)
+                    sorted_cues = _merge_cues_timeline(sorted_cues, gap_cues)
+                    _log(log_callback, f"  → bổ sung {len(gap_cues)} cue", "info")
+                else:
+                    _log(
+                        log_callback,
+                        "  → vẫn không có lời (im lặng thật hoặc cần sửa SRT thủ công)",
+                        "warn",
+                    )
     finally:
         for path in temps:
             path.unlink(missing_ok=True)
@@ -2082,12 +2196,7 @@ def _transcribe_with_groq(
         log_callback,
         f"Groq {groq_model}{cache_note} · ngôn ngữ {lang_label} · ngắt câu {split_label}",
     )
-    if not language:
-        _log(
-            log_callback,
-            "Groq: nên chọn ngôn ngữ «vi» thay vì auto để tránh nhận dạng sai.",
-            "warn",
-        )
+    # Không spam warning khi auto. Chỉ cảnh báo nếu bên dưới phát hiện SRT bị "đứt".
 
     _check_controller(process_controller)
     report = _progress_with_cancel(process_controller, progress_callback)
@@ -2103,17 +2212,19 @@ def _transcribe_with_groq(
     all_cues: list[tuple[float, float, str]] = []
     all_words: list[_GroqWord] = []
     prompt_tail = ""
+    detected_language = ""
     try:
         total = len(chunks)
         for i, (chunk_path, offset) in enumerate(chunks):
             _check_controller(process_controller)
             pct = 10.0 + ((i + 1) / total) * 80.0
             report(pct, f"Groq nhận dạng ({i + 1}/{total})...")
+            chunk_lang = language or detected_language
             try:
-                cues, words = _groq_transcribe_chunk(
+                cues, words, chunk_detected = _groq_transcribe_chunk(
                     client,
                     chunk_path,
-                    language,
+                    chunk_lang,
                     offset,
                     process_controller,
                     prompt_tail=prompt_tail,
@@ -2125,6 +2236,15 @@ def _transcribe_with_groq(
                 if is_groq_rate_limit(err):
                     raise GroqRateLimitError(str(err)) from err
                 raise
+            if chunk_detected:
+                if not detected_language:
+                    detected_language = chunk_detected
+                    if not language and log_callback:
+                        _log(
+                            log_callback,
+                            f"Groq auto detect: «{detected_language}»",
+                            "info",
+                        )
             all_cues.extend(cues)
             all_words.extend(words)
             chunk_prompt = _groq_prompt_from_cues(cues)
@@ -2156,6 +2276,7 @@ def _transcribe_with_groq(
             filtered,
             language=language,
             audio_duration=audio_duration,
+            detected_language=detected_language,
             process_controller=process_controller,
             log_callback=log_callback,
         )
