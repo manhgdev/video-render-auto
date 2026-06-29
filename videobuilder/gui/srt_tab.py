@@ -655,12 +655,15 @@ class SrtTabMixin:
                 return
             if self.srt_running or self.whisper_installing:
                 self.srt_create_btn.configure(state=tk.DISABLED)
+                self._style_primary_button(self.srt_create_btn, False)
                 self.preview_btn.configure(state=tk.DISABLED)
             elif self.whisper_ok:
                 self.srt_create_btn.configure(state=tk.NORMAL)
+                self._style_primary_button(self.srt_create_btn, True)
                 self.preview_btn.configure(state=tk.NORMAL)
             else:
                 self.srt_create_btn.configure(state=tk.DISABLED)
+                self._style_primary_button(self.srt_create_btn, False)
                 self.preview_btn.configure(state=tk.DISABLED)
             self._update_srt_control_buttons()
 
@@ -1043,5 +1046,4 @@ class SrtTabMixin:
                 self.after(0, done)
 
             threading.Thread(target=worker, daemon=True).start()
-
 

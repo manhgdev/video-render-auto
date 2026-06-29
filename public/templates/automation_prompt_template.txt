@@ -1,0 +1,19 @@
+# Prompt mẫu cho tab Tự động
+
+Mục tiêu: tạo video giáo dục ngắn/dài dạng kể chuyện, dễ hiểu, có hook mạnh.
+
+Phong cách:
+- Tiếng Việt tự nhiên, câu ngắn, dễ đọc TTS.
+- Mở đầu phải gây tò mò trong 5-10 giây đầu.
+- Nội dung có nhịp kể chuyện, ví dụ cụ thể, không lan man.
+- Hình ảnh minh họa ưu tiên 2D educational, rõ ý, không quá nhiều chi tiết.
+
+Yêu cầu script:
+- Chỉ viết lời đọc thuần.
+- Không heading, không bullet, không ghi chú sân khấu.
+- Không chèn mô tả hình ảnh vào script audio.
+
+Yêu cầu prompt ảnh:
+- Chia theo timeline bám sát audio.
+- Mỗi prompt mô tả rõ nhân vật, hành động, bối cảnh, cảm xúc.
+- Giữ nhất quán style và nhân vật giữa các cảnh.

@@ -33,10 +33,44 @@ from videobuilder.version import APP_VERSION
 
 
 class ShellMixin:
+        def _style_primary_button(self, button, enabled: bool):
+            if enabled:
+                button.configure(
+                    bg="#dbeafe", fg="#1e3a8a", activebackground="#bfdbfe",
+                    activeforeground="#1e3a8a", relief=tk.FLAT, cursor="hand2",
+                )
+            else:
+                button.configure(
+                    bg="#e2e8f0", fg="#64748b", activebackground="#e2e8f0",
+                    activeforeground="#6b7280", relief=tk.FLAT, cursor="arrow",
+                )
+
+        def _make_action_button(self, parent, text, command, *, kind="primary", width=None):
+            palette = {
+                "primary": ("#dbeafe", "#1e3a8a", "#bfdbfe"),
+                "soft": (C["accent_soft"], C["accent"], "#dbeafe"),
+                "warn": ("#fef3c7", "#b45309", "#fde68a"),
+                "danger": ("#fee2e2", "#b91c1c", "#fecaca"),
+                "ghost": ("#f1f5f9", C["text"], "#e2e8f0"),
+            }
+            bg, fg, active = palette.get(kind, palette["ghost"])
+            return tk.Button(
+                parent, text=text, command=command, width=width,
+                font=self._font(10 if kind == "primary" else 9, "bold" if kind in ("primary", "danger") else "normal"),
+                bg=bg, fg=fg, activebackground=active, activeforeground=fg,
+                disabledforeground="#94a3b8", relief=tk.FLAT, cursor="hand2",
+                padx=14, pady=7, borderwidth=0,
+            )
+
         def _apply_footer_mode(self, mode: str):
             """Chuyển footer giữa render (Dự án/Cài đặt) và SRT."""
             is_srt = mode in ("srt", "auto")
             self._footer_mode = mode
+
+            if not self._log_block.winfo_ismapped():
+                self._log_block.pack(fill=tk.X)
+            if getattr(self, "log_text", None) is not None:
+                self.log_text.configure(height=1 if mode == "auto" else 5)
 
             if is_srt:
                 self._render_bar.wrap.pack_forget()
@@ -109,13 +143,13 @@ class ShellMixin:
             for k, btn in self._tab_buttons.items():
                 if k == key:
                     btn.configure(
-                        bg=active, fg=C["accent"], font=self._font(10, "bold"),
-                        highlightbackground=active,
+                        bg=active, fg=C["accent"], font=self._font(9, "bold"),
+                        highlightbackground=C["border"], relief=tk.FLAT,
                     )
                 else:
                     btn.configure(
-                        bg=track, fg=C["muted"], font=self._font(10),
-                        highlightbackground=track,
+                        bg=track, fg=C["muted"], font=self._font(9),
+                        highlightbackground=track, relief=tk.FLAT,
                     )
 
         def _add_segmented_tab(self, track_inner, content, key: str, title: str):
@@ -125,13 +159,14 @@ class ShellMixin:
             btn = tk.Label(
                 track_inner,
                 text=title,
-                font=self._font(10),
+                font=self._font(9),
                 bg=C["tab_track"],
                 fg=C["muted"],
-                padx=20,
+                padx=18,
                 pady=8,
                 cursor="hand2",
-                highlightthickness=0,
+                highlightthickness=1,
+                highlightbackground=C["tab_track"],
                 borderwidth=0,
             )
             btn.pack(side=tk.LEFT, padx=2)
@@ -161,9 +196,9 @@ class ShellMixin:
             wrap.rowconfigure(2, weight=1)
 
             bar_row = tk.Frame(wrap, bg=C["card"])
-            bar_row.grid(row=0, column=0, sticky="w", pady=(0, 10))
+            bar_row.grid(row=0, column=0, sticky="ew", pady=(0, 8))
 
-            track = tk.Frame(bar_row, bg=C["tab_track"], highlightthickness=0)
+            track = tk.Frame(bar_row, bg=C["tab_track"], highlightthickness=1, highlightbackground=C["border"])
             track.pack(anchor="w")
 
             track_inner = tk.Frame(track, bg=C["tab_track"])
@@ -187,26 +222,26 @@ class ShellMixin:
                 bar=C["progress_bar"],
                 border=C["border"],
             )
-            self.header = tk.Frame(self, bg=C["header"], padx=12, pady=6)
+            self.header = tk.Frame(self, bg=C["header"], padx=18, pady=10)
             self.header.pack(fill=tk.X)
 
             tk.Label(
-                self.header, text="VideoBuilder", font=self._font(13, "bold"),
+                self.header, text="VideoBuilder", font=self._font(16, "bold"),
                 bg=C["header"], fg="#ffffff",
             ).pack(side=tk.LEFT)
             tk.Label(
-                self.header, text="manhgdev", font=self._font(8),
-                bg=C["accent"], fg="#ffffff", padx=6, pady=1,
+                self.header, text="manhgdev", font=self._font(9, "bold"),
+                bg=C["accent"], fg="#ffffff", padx=8, pady=2,
             ).pack(side=tk.LEFT, padx=(8, 0))
             tk.Label(
-                self.header, text=f"v{APP_VERSION}", font=self._font(8),
+                self.header, text=f"v{APP_VERSION}", font=self._font(10),
                 bg=C["header"], fg=C["header_sub"],
             ).pack(side=tk.LEFT, padx=(6, 0))
             ttk.Label(
                 self.header, textvariable=self.encoder_info_var, style="HeaderSub.TLabel",
             ).pack(side=tk.RIGHT)
 
-            self.ffmpeg_banner = tk.Frame(self, bg=C["warn_bg"], padx=10, pady=4)
+            self.ffmpeg_banner = tk.Frame(self, bg=C["warn_bg"], padx=18, pady=8)
             self.ffmpeg_banner.pack(fill=tk.X, after=self.header)
 
             ffmpeg_inner = tk.Frame(self.ffmpeg_banner, bg=C["warn_bg"])
@@ -216,7 +251,7 @@ class ShellMixin:
             self.ffmpeg_icon_label = tk.Label(
                 ffmpeg_inner,
                 text="!",
-                font=self._font(10, "bold"),
+                font=self._font(11, "bold"),
                 bg=C["warn_bg"],
                 fg=C["warn_fg"],
                 width=2,
@@ -226,7 +261,7 @@ class ShellMixin:
             self.ffmpeg_msg_label = tk.Label(
                 ffmpeg_inner,
                 textvariable=self.ffmpeg_status_var,
-                font=self._font(10),
+                font=self._font(11, "bold"),
                 bg=C["warn_bg"],
                 fg=C["warn_fg"],
                 anchor="w",
@@ -237,10 +272,10 @@ class ShellMixin:
                 ffmpeg_inner,
                 text="Cài FFmpeg",
                 font=self._font(8, "bold"),
-                bg=C["warn_btn"],
-                fg="#ffffff",
-                activebackground=C["warn_btn_hover"],
-                activeforeground="#ffffff",
+                bg="#dbeafe",
+                fg="#1e3a8a",
+                activebackground="#bfdbfe",
+                activeforeground="#1e3a8a",
                 relief=tk.FLAT,
                 cursor="hand2",
                 padx=8,
@@ -265,16 +300,17 @@ class ShellMixin:
             self._render_footer.pack(side=tk.BOTTOM, fill=tk.X)
             footer = self._render_footer
 
-            body_outer = tk.Frame(content, bg=C["card"], padx=14, pady=10)
+            body_outer = tk.Frame(content, bg=C["card"], padx=18, pady=12)
             body_outer.pack(fill=tk.BOTH, expand=True)
 
-            prog_block = tk.Frame(footer, bg=C["footer"], padx=12, pady=6)
+            prog_block = tk.Frame(footer, bg=C["footer"], padx=16, pady=8)
             prog_block.pack(fill=tk.X)
 
             log_block = tk.Frame(footer, bg=C["footer"])
             log_block.pack(fill=tk.X)
+            self._log_block = log_block
 
-            btn_block = tk.Frame(footer, bg=C["footer"], padx=12, pady=6)
+            btn_block = tk.Frame(footer, bg=C["footer"], padx=16, pady=10)
             btn_block.pack(fill=tk.X)
 
             row_prog = tk.Frame(prog_block, bg=C["footer"])
@@ -308,33 +344,15 @@ class ShellMixin:
 
             row_btns = tk.Frame(btn_block, bg=C["footer"])
             row_btns.pack(fill=tk.X)
-            self.render_btn = tk.Button(
-                row_btns, text="RENDER", font=self._font(10, "bold"), bg=C["accent"], fg="#ffffff",
-                activebackground=C["accent_hover"], activeforeground="#ffffff", relief=tk.FLAT,
-                cursor="hand2", padx=16, pady=6, command=self._start_render,
-            )
+            self.render_btn = self._make_action_button(row_btns, "RENDER", self._start_render, kind="primary")
             self.render_btn.pack(side=tk.LEFT)
-            self.preview_btn = tk.Button(
-                row_btns, text="Preview", font=self._font(10), bg=C["accent_soft"], fg=C["accent"],
-                activebackground="#e0e7ff", relief=tk.FLAT, cursor="hand2", padx=12, pady=6,
-                command=self._start_preview,
-            )
+            self.preview_btn = self._make_action_button(row_btns, "Preview", self._start_preview, kind="soft")
             self.preview_btn.pack(side=tk.LEFT, padx=(8, 0))
-            self.pause_btn = tk.Button(
-                row_btns, text="Tạm dừng", font=self._font(10, "bold"),
-                bg="#fef3c7", fg="#b45309",
-                activebackground="#fde68a", activeforeground="#92400e",
-                relief=tk.GROOVE, borderwidth=1, cursor="hand2", padx=12, pady=6,
-                state=tk.DISABLED, command=self._toggle_pause_render,
-            )
+            self.pause_btn = self._make_action_button(row_btns, "Tạm dừng", self._toggle_pause_render, kind="warn")
+            self.pause_btn.configure(state=tk.DISABLED)
             self.pause_btn.pack(side=tk.LEFT, padx=(8, 0))
-            self.cancel_btn = tk.Button(
-                row_btns, text="Hủy", font=self._font(10, "bold"),
-                bg="#fee2e2", fg="#b91c1c",
-                activebackground="#fecaca", activeforeground="#991b1b",
-                relief=tk.GROOVE, borderwidth=1, cursor="hand2", padx=12, pady=6,
-                state=tk.DISABLED, command=self._cancel_render,
-            )
+            self.cancel_btn = self._make_action_button(row_btns, "Hủy", self._cancel_render, kind="danger")
+            self.cancel_btn.configure(state=tk.DISABLED)
             self.cancel_btn.pack(side=tk.LEFT, padx=(4, 0))
             self.open_video_btn = ttk.Button(row_btns, text="Mở video", command=self._open_video, state=tk.DISABLED)
             self.open_video_btn.pack(side=tk.LEFT, padx=(8, 0))
@@ -343,11 +361,7 @@ class ShellMixin:
             self.open_prompts_btn = ttk.Button(
                 row_btns, text="Mở tạo ảnh", command=self._open_prompts, state=tk.DISABLED,
             )
-            self.srt_create_btn = tk.Button(
-                row_btns, text="Tạo SRT", font=self._font(10, "bold"), bg=C["accent"], fg="#ffffff",
-                activebackground=C["accent_hover"], activeforeground="#ffffff", relief=tk.FLAT,
-                cursor="hand2", padx=16, pady=6, command=self._start_create_srt,
-            )
+            self.srt_create_btn = self._make_action_button(row_btns, "Tạo SRT", self._start_create_srt, kind="primary")
             self._footer_status_label = tk.Label(
                 row_btns, textvariable=self.status_var, font=self._font(10),
                 bg=C["footer"], fg=C["muted"], width=24, anchor=tk.E,
@@ -492,5 +506,3 @@ class ShellMixin:
             self._opts_path_span(
                 tab_opts, 7, "Watermark", self.watermark_var, self._pick_watermark, help_key="watermark",
             )
-
-

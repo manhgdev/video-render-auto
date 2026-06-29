@@ -984,10 +984,39 @@ def install_srt_packages(*, log_callback=None) -> None:
         "groq", WHISPER_NUMPY_SPEC, "faster-whisper", "edge-tts",
         "python-dotenv",
     ]
+    _log(log_callback, f"Python: {sys.executable}")
+    _log(log_callback, "Pip: " + " ".join(cmd))
     try:
-        subprocess.check_call(cmd)
+        proc = subprocess.run(
+            cmd,
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+        )
     except subprocess.CalledProcessError as err:
         raise CreateSrtError(f"Không cài được gói nhận dạng (mã {err.returncode}).") from err
+    except OSError as err:
+        raise CreateSrtError(f"Không chạy được pip: {err}") from err
+    if proc.stdout:
+        lines = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+        for line in lines[-25:]:
+            _log(log_callback, line)
+    if proc.returncode != 0:
+        detail = ""
+        if proc.stdout:
+            lines = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+            detail = "\n" + "\n".join(lines[-12:])
+        if proc.stdout and "externally-managed-environment" in proc.stdout.lower():
+            raise CreateSrtError(
+                "Python hiện tại bị Homebrew chặn cài pip (PEP 668). "
+                "Đóng app rồi chạy lại bằng lệnh: python run.py. "
+                "App sẽ tự tạo .venv cục bộ để cài gói, không dùng --break-system-packages."
+                f"{detail}"
+            )
+        raise CreateSrtError(
+            f"Không cài được gói nhận dạng (mã {proc.returncode}).{detail}"
+        )
     _log(log_callback, "Đã cài gói nhận dạng.", "success")
 
 

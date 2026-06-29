@@ -21,9 +21,51 @@ from videobuilder.core.ffmpeg_setup import get_app_dir
 from videobuilder.core.generate_prompts import GeneratePromptsError
 from videobuilder.core.groq_models import groq_llm_model_chain, load_cached_groq_models
 
-DEFAULT_AUTOMATION_PROMPT = get_app_dir() / "automation_prompt.txt"
+DEFAULT_AUTOMATION_PROMPT = get_app_dir() / "template" / "v1-base-vietnam-2D.txt"
+FALLBACK_AUTOMATION_PROMPT = get_app_dir() / "public" / "templates" / "automation_prompt_template.txt"
 DEFAULT_TTS_VOICE = "vi-VN-HoaiMyNeural"
 DEFAULT_TTS_RATE = "+0%"
+TTS_VOICE_OPTIONS: tuple[str, ...] = (
+    "vi-VN-HoaiMyNeural",
+    "vi-VN-NamMinhNeural",
+    "en-US-JennyNeural",
+    "en-US-GuyNeural",
+    "en-US-AriaNeural",
+    "en-GB-SoniaNeural",
+    "en-GB-RyanNeural",
+    "ko-KR-SunHiNeural",
+    "ko-KR-InJoonNeural",
+)
+
+DEFAULT_AUTOMATION_PROMPT_TEXT = """# Prompt mẫu cho tab Tự động
+
+Mục tiêu: tạo video giáo dục ngắn/dài dạng kể chuyện, dễ hiểu, có hook mạnh.
+
+Phong cách:
+- Tiếng Việt tự nhiên, câu ngắn, dễ đọc TTS.
+- Mở đầu phải gây tò mò trong 5-10 giây đầu.
+- Nội dung có nhịp kể chuyện, ví dụ cụ thể, không lan man.
+- Hình ảnh minh họa ưu tiên 2D educational, rõ ý, không quá nhiều chi tiết.
+
+Yêu cầu script:
+- Chỉ viết lời đọc thuần.
+- Không heading, không bullet, không ghi chú sân khấu.
+- Không chèn mô tả hình ảnh vào script audio.
+
+Yêu cầu prompt ảnh:
+- Chia theo timeline bám sát audio.
+- Mỗi prompt mô tả rõ nhân vật, hành động, bối cảnh, cảm xúc.
+- Giữ nhất quán style và nhân vật giữa các cảnh.
+"""
+
+
+def ensure_default_automation_prompt() -> Path:
+    if DEFAULT_AUTOMATION_PROMPT.is_file():
+        return DEFAULT_AUTOMATION_PROMPT
+    FALLBACK_AUTOMATION_PROMPT.parent.mkdir(parents=True, exist_ok=True)
+    if not FALLBACK_AUTOMATION_PROMPT.is_file():
+        FALLBACK_AUTOMATION_PROMPT.write_text(DEFAULT_AUTOMATION_PROMPT_TEXT, encoding="utf-8")
+    return FALLBACK_AUTOMATION_PROMPT
 
 TOOL_PRODUCTION_PROMPT = """
 Bạn là engine sản xuất video YouTube audio-first chạy trong app desktop VideoBuilder.
@@ -137,7 +179,7 @@ def discover_existing_topic_hints(output_dir: str | Path | None) -> list[str]:
 
 
 def _default_auto_output_folder() -> Path:
-    for folder in (get_app_dir(), Path.home() / "Downloads", Path.home() / "Videos", Path.home() / "Desktop"):
+    for folder in (get_app_dir() / "public" / "auto", Path.home() / "Downloads", Path.home() / "Videos", Path.home() / "Desktop"):
         try:
             folder.mkdir(parents=True, exist_ok=True)
             probe = folder / "._vb_write_test"

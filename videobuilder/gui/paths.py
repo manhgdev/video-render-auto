@@ -8,6 +8,24 @@ from videobuilder.core.ffmpeg_setup import get_app_dir
 
 from videobuilder.gui.constants import OUTPUT_BASENAME
 
+
+def public_dir() -> Path:
+    folder = get_app_dir() / "public"
+    folder.mkdir(parents=True, exist_ok=True)
+    return folder
+
+
+def public_output_dir() -> Path:
+    folder = public_dir() / "outputs"
+    folder.mkdir(parents=True, exist_ok=True)
+    return folder
+
+
+def public_template_dir() -> Path:
+    folder = public_dir() / "templates"
+    folder.mkdir(parents=True, exist_ok=True)
+    return folder
+
 def get_settings_file() -> Path:
     """Exe trong dist/ dùng chung settings với thư mục project cha."""
     app_dir = get_app_dir()
@@ -63,8 +81,8 @@ def is_writable_output_dir(folder: Path) -> bool:
 
 
 def default_output_folder() -> Path:
-    """Mặc định: cạnh file .exe; nếu không ghi được → Downloads / Videos / Desktop."""
-    candidates = [get_app_dir(), Path.home() / "Downloads", Path.home() / "Videos", Path.home() / "Desktop"]
+    """Mặc định: public/outputs; nếu không ghi được → Downloads / Videos / Desktop."""
+    candidates = [public_output_dir(), Path.home() / "Downloads", Path.home() / "Videos", Path.home() / "Desktop"]
     seen = set()
     for folder in candidates:
         key = str(folder).lower()
@@ -87,4 +105,3 @@ def normalize_output_path(path: str | Path) -> Path:
     if is_writable_output_dir(p.parent):
         return p.resolve()
     return (default_output_folder() / (p.name or OUTPUT_BASENAME)).resolve()
-

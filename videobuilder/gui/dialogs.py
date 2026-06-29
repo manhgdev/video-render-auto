@@ -107,8 +107,8 @@ class DialogMixin:
 
             if ask:
                 tk.Button(
-                    btn_row, text="Có", font=self._font(10, "bold"), bg=C["accent"], fg="#ffffff",
-                    activebackground=C["accent_hover"], relief=tk.FLAT, padx=14, pady=5,
+                    btn_row, text="Có", font=self._font(10, "bold"), bg="#dbeafe", fg="#1e3a8a",
+                    activebackground="#bfdbfe", activeforeground="#1e3a8a", relief=tk.FLAT, padx=14, pady=5,
                     command=lambda: close(True),
                 ).pack(side=tk.RIGHT)
                 tk.Button(
@@ -118,8 +118,8 @@ class DialogMixin:
                 ).pack(side=tk.RIGHT, padx=(0, 8))
             else:
                 tk.Button(
-                    btn_row, text="OK", font=self._font(10, "bold"), bg=C["accent"], fg="#ffffff",
-                    activebackground=C["accent_hover"], relief=tk.FLAT, padx=16, pady=5,
+                    btn_row, text="OK", font=self._font(10, "bold"), bg="#dbeafe", fg="#1e3a8a",
+                    activebackground="#bfdbfe", activeforeground="#1e3a8a", relief=tk.FLAT, padx=16, pady=5,
                     command=lambda: close(False),
                 ).pack(side=tk.RIGHT)
                 if copy_message is not None:
@@ -152,6 +152,8 @@ class DialogMixin:
             try:
                 if sys.platform == "win32":
                     subprocess.Popen(["notepad.exe", str(path)], close_fds=True)
+                elif sys.platform == "darwin":
+                    subprocess.Popen(["open", str(path)])
                 else:
                     subprocess.Popen(["xdg-open", str(path)])
             except OSError as err:
@@ -273,7 +275,7 @@ class DialogMixin:
             editor_label = "Mở Notepad" if sys.platform == "win32" else "Mở app ngoài"
             tk.Button(
                 btn_row, text="Lưu", font=self._font(10, "bold"),
-                bg=C["accent"], fg="#ffffff", activebackground=C["accent_hover"],
+                bg="#dbeafe", fg="#1e3a8a", activebackground="#bfdbfe", activeforeground="#1e3a8a",
                 relief=tk.FLAT, padx=14, pady=5,
                 command=save_content,
             ).pack(side=tk.RIGHT)
@@ -334,4 +336,3 @@ class DialogMixin:
 
         def _ask_yes_no(self, title, message, kind="info"):
             return self._dialog(title, message, kind=kind, ask=True)
-

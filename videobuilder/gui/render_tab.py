@@ -81,9 +81,11 @@ class RenderTabMixin:
             if self.ffmpeg_ok and not self.rendering:
                 self.render_btn.configure(state=tk.NORMAL)
                 self.preview_btn.configure(state=tk.NORMAL)
+                self._style_primary_button(self.render_btn, True)
             elif not self.ffmpeg_installing:
                 self.render_btn.configure(state=tk.DISABLED)
                 self.preview_btn.configure(state=tk.DISABLED)
+                self._style_primary_button(self.render_btn, False)
             self._update_render_control_buttons()
 
         def _update_render_control_buttons(self):
@@ -151,6 +153,7 @@ class RenderTabMixin:
                 state = tk.DISABLED
             self.render_btn.configure(state=state)
             self.preview_btn.configure(state=state)
+            self._style_primary_button(self.render_btn, state == tk.NORMAL)
             self._update_render_control_buttons()
 
         def _toggle_pause_render(self):
@@ -579,4 +582,3 @@ class RenderTabMixin:
                 self._show_validation_error(err)
                 return
             self._run_build(options)
-

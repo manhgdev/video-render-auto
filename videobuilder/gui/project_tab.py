@@ -4,6 +4,7 @@
 import json
 import os
 import subprocess
+import sys
 import webbrowser
 from datetime import datetime
 from pathlib import Path
@@ -81,7 +82,7 @@ class ProjectTabMixin:
 
             tk.Button(
                 btn_row, text="Mở Telegram", font=self._font(10, "bold"),
-                bg=C["accent"], fg="#ffffff", activebackground=C["accent_hover"],
+                bg="#dbeafe", fg="#1e3a8a", activebackground="#bfdbfe",
                 relief=tk.FLAT, cursor="hand2", padx=14, pady=5,
                 command=self._open_telegram,
             ).pack(side=tk.LEFT, padx=(4, 8))
@@ -101,19 +102,19 @@ class ProjectTabMixin:
 
         def _build_log_panel(self, parent):
             wrap = tk.Frame(parent, bg=C["log_bg"], highlightbackground=C["border"], highlightthickness=1)
-            wrap.pack(fill=tk.X, padx=10, pady=4)
+            wrap.pack(fill=tk.X, padx=16, pady=(0, 8))
             wrap.columnconfigure(0, weight=1)
 
-            top = tk.Frame(wrap, bg=C["log_bg"], padx=8, pady=4)
+            top = tk.Frame(wrap, bg=C["log_bg"], padx=10, pady=3)
             top.grid(row=0, column=0, columnspan=2, sticky="ew")
             tk.Label(top, text="Log", font=self._font(9, "bold"), bg=C["log_bg"], fg=C["log_muted"]).pack(side=tk.LEFT)
             ttk.Button(top, text="Xóa", command=self._clear_log, style="Small.TButton", width=5).pack(side=tk.RIGHT, padx=(4, 0))
             ttk.Button(top, text="Copy", command=self._copy_log, style="Small.TButton", width=5).pack(side=tk.RIGHT)
 
             self.log_text = tk.Text(
-                wrap, wrap=tk.WORD, font=("Consolas", 9), height=5,
+                wrap, wrap=tk.WORD, font=("Menlo" if sys.platform == "darwin" else "Consolas", 9), height=3,
                 bg=C["log_bg"], fg=C["log_fg"], insertbackground=C["log_fg"],
-                relief=tk.FLAT, padx=8, pady=4, state=tk.DISABLED,
+                relief=tk.FLAT, padx=10, pady=5, state=tk.DISABLED,
             )
             log_scroll = ttk.Scrollbar(wrap, orient=tk.VERTICAL, command=self.log_text.yview)
             self.log_text.configure(yscrollcommand=log_scroll.set)
@@ -338,9 +339,14 @@ class ProjectTabMixin:
                 self._show_warning("Không tìm thấy", f"Chưa có file:\n{path}")
                 return
             try:
-                os.startfile(path)  # type: ignore[attr-defined]
-            except AttributeError:
-                subprocess.Popen(["xdg-open", str(path)])
+                if sys.platform == "win32":
+                    os.startfile(path)  # type: ignore[attr-defined]
+                elif sys.platform == "darwin":
+                    subprocess.Popen(["open", str(path)])
+                else:
+                    subprocess.Popen(["xdg-open", str(path)])
+            except OSError as err:
+                self._show_error("Không mở được", f"Không mở được file:\n{path}\n\n{err}")
 
         def _open_folder_path(self, path):
             path = Path(path)
@@ -349,9 +355,14 @@ class ProjectTabMixin:
                 self._show_warning("Không tìm thấy", f"Chưa có thư mục:\n{folder}")
                 return
             try:
-                os.startfile(folder)  # type: ignore[attr-defined]
-            except AttributeError:
-                subprocess.Popen(["xdg-open", str(folder)])
+                if sys.platform == "win32":
+                    os.startfile(folder)  # type: ignore[attr-defined]
+                elif sys.platform == "darwin":
+                    subprocess.Popen(["open", str(folder)])
+                else:
+                    subprocess.Popen(["xdg-open", str(folder)])
+            except OSError as err:
+                self._show_error("Không mở được", f"Không mở được thư mục:\n{folder}\n\n{err}")
 
         def _open_output_path(self):
             target = self.last_output or self.output_var.get().strip()
@@ -433,8 +444,8 @@ class ProjectTabMixin:
                 "srt_split": self._get_srt_split_mode(),
                 "auto_prompt_file": self.auto_prompt_file_var.get(),
                 "auto_output_dir": self.auto_output_dir_var.get(),
-                "auto_seed": getattr(self, "auto_seed_text", None).get("1.0", tk.END).strip()
-                if getattr(self, "auto_seed_text", None) is not None else self.auto_seed_var.get(),
+                "auto_youtube_url": self.auto_youtube_url_var.get(),
+                "auto_seed": self.auto_seed_var.get(),
                 "auto_script": self.auto_script_var.get(),
                 "auto_voice": self.auto_voice_var.get(),
                 "auto_rate": self.auto_rate_var.get(),
@@ -483,6 +494,7 @@ class ProjectTabMixin:
                 "srt_split": self.srt_split_var,
                 "auto_prompt_file": self.auto_prompt_file_var,
                 "auto_output_dir": self.auto_output_dir_var,
+                "auto_youtube_url": self.auto_youtube_url_var,
                 "auto_seed": self.auto_seed_var,
                 "auto_script": self.auto_script_var,
                 "auto_voice": self.auto_voice_var,
@@ -511,9 +523,8 @@ class ProjectTabMixin:
             history = data.get("auto_topic_history", [])
             if isinstance(history, list):
                 self.auto_topic_history = [str(item).strip() for item in history if str(item).strip()][-200:]
-            if getattr(self, "auto_seed_text", None) is not None:
-                self.auto_seed_text.delete("1.0", tk.END)
-                self.auto_seed_text.insert("1.0", self.auto_seed_var.get() or "start")
+            if self.auto_seed_var.get().strip().lower() == "start":
+                self.auto_seed_var.set("")
             self._apply_groq_api_key(silent=True)
 
         def _save_settings(self):
@@ -530,4 +541,3 @@ class ProjectTabMixin:
                 self.process_controller.cancel()
             self._save_settings()
             self.destroy()
-

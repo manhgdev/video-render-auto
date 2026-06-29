@@ -7,7 +7,7 @@ from videobuilder.core.env_config import load_env
 from videobuilder.core.ffmpeg_setup import ensure_ffmpeg_on_path
 from videobuilder.core.pipeline import DEFAULT_PREVIEW_SECONDS, ENCODE_QUALITY_OPTIONS, ENCODER_OVERRIDE_OPTIONS, ZOOM_LEVEL_OPTIONS, detect_video_encoder
 from videobuilder.core.create_srt import DEFAULT_LANGUAGE, DEFAULT_MODEL, DEFAULT_SRT_SPLIT, SRT_SPLIT_KEY_TO_LABEL
-from videobuilder.core.automation import DEFAULT_AUTOMATION_PROMPT, DEFAULT_TTS_RATE, DEFAULT_TTS_VOICE
+from videobuilder.core.automation import DEFAULT_TTS_RATE, DEFAULT_TTS_VOICE, ensure_default_automation_prompt
 from videobuilder.gui.constants import (
     C,
     EFFECT_KEY_TO_LABEL,
@@ -40,8 +40,8 @@ class VideoBuilderApp(
         def __init__(self):
             super().__init__()
             self.title(window_title())
-            self.geometry("880x640")
-            self.minsize(760, 540)
+            self.geometry("1040x720")
+            self.minsize(720, 520)
             self.configure(bg=C["bg"])
 
             load_env()
@@ -92,8 +92,9 @@ class VideoBuilderApp(
             self.srt_model_var = tk.StringVar(value=DEFAULT_MODEL)
             self.srt_language_var = tk.StringVar(value=DEFAULT_LANGUAGE)
             self.srt_split_var = tk.StringVar(value=SRT_SPLIT_KEY_TO_LABEL[DEFAULT_SRT_SPLIT])
-            self.auto_prompt_file_var = tk.StringVar(value=str(DEFAULT_AUTOMATION_PROMPT))
+            self.auto_prompt_file_var = tk.StringVar(value=str(ensure_default_automation_prompt()))
             self.auto_output_dir_var = tk.StringVar()
+            self.auto_youtube_url_var = tk.StringVar()
             self.auto_seed_var = tk.StringVar(value="start")
             self.auto_script_var = tk.StringVar()
             self.auto_voice_var = tk.StringVar(value=DEFAULT_TTS_VOICE)
