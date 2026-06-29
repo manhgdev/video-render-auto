@@ -381,10 +381,16 @@ class ProjectTabMixin:
                 self._open_output_path()
 
         def _open_folder(self):
-            if getattr(self, "_footer_mode", "render") == "srt":
-                target = self.last_srt_output or self.srt_output_var.get().strip()
+            mode = getattr(self, "_footer_mode", "render")
+            if mode in ("srt", "auto"):
+                target = self.last_srt_output or self.subtitle_var.get().strip() or self.srt_output_var.get().strip()
                 if not target:
-                    target = self.last_prompts_output or self.srt_prompts_output_var.get().strip()
+                    target = self.last_prompts_output or self.prompts_var.get().strip() or self.srt_prompts_output_var.get().strip()
+                if not target and mode == "auto":
+                    auto_dir = self.auto_output_dir_var.get().strip()
+                    if auto_dir and Path(auto_dir).is_dir():
+                        self._open_folder_path(auto_dir)
+                        return
             else:
                 target = self.last_output or self.output_var.get().strip()
             if not target:
@@ -425,6 +431,14 @@ class ProjectTabMixin:
                 "srt_model": self.srt_model_var.get(),
                 "srt_language": self.srt_language_var.get(),
                 "srt_split": self._get_srt_split_mode(),
+                "auto_prompt_file": self.auto_prompt_file_var.get(),
+                "auto_output_dir": self.auto_output_dir_var.get(),
+                "auto_seed": getattr(self, "auto_seed_text", None).get("1.0", tk.END).strip()
+                if getattr(self, "auto_seed_text", None) is not None else self.auto_seed_var.get(),
+                "auto_script": self.auto_script_var.get(),
+                "auto_voice": self.auto_voice_var.get(),
+                "auto_rate": self.auto_rate_var.get(),
+                "auto_topic_history": getattr(self, "auto_topic_history", []),
             }
 
         def _load_settings(self):
@@ -467,9 +481,17 @@ class ProjectTabMixin:
                 "srt_model": self.srt_model_var,
                 "srt_language": self.srt_language_var,
                 "srt_split": self.srt_split_var,
+                "auto_prompt_file": self.auto_prompt_file_var,
+                "auto_output_dir": self.auto_output_dir_var,
+                "auto_seed": self.auto_seed_var,
+                "auto_script": self.auto_script_var,
+                "auto_voice": self.auto_voice_var,
+                "auto_rate": self.auto_rate_var,
             }
             for key, var in mapping.items():
                 if key not in data:
+                    continue
+                if key == "auto_topic_history":
                     continue
                 if key == "strip_metadata" and isinstance(data[key], bool):
                     var.set("Bật" if data[key] else "Tắt")
@@ -486,6 +508,12 @@ class ProjectTabMixin:
             self._sync_prompts_display(from_output_var=True)
             self._sync_srt_output_display(from_output_var=True)
             self._sync_srt_prompts_output_display(from_output_var=True)
+            history = data.get("auto_topic_history", [])
+            if isinstance(history, list):
+                self.auto_topic_history = [str(item).strip() for item in history if str(item).strip()][-200:]
+            if getattr(self, "auto_seed_text", None) is not None:
+                self.auto_seed_text.delete("1.0", tk.END)
+                self.auto_seed_text.insert("1.0", self.auto_seed_var.get() or "start")
             self._apply_groq_api_key(silent=True)
 
         def _save_settings(self):
@@ -498,7 +526,7 @@ class ProjectTabMixin:
                 pass
 
         def _on_close(self):
-            if self.process_controller and (self.rendering or self.srt_running):
+            if self.process_controller and (self.rendering or self.srt_running or self.auto_running):
                 self.process_controller.cancel()
             self._save_settings()
             self.destroy()

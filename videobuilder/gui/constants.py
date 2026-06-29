@@ -70,6 +70,7 @@ SRT_FIELD_LABEL_WIDTH = 13
 TAB_ITEMS = (
     ("files", "Dự án"),
     ("opts", "Cài đặt"),
+    ("auto", "Tự động"),
     ("srt", "Tạo SRT"),
     ("contact", "Liên hệ"),
 )

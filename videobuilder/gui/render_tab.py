@@ -184,8 +184,9 @@ class RenderTabMixin:
             self._update_render_control_buttons()
 
         def _cancel_render(self):
-            if self.srt_running and self.process_controller:
-                self._log("Đang hủy tạo SRT...", "warn")
+            if (self.srt_running or getattr(self, "auto_running", False)) and self.process_controller:
+                label = "tự động" if getattr(self, "auto_running", False) else "SRT"
+                self._log(f"Đang hủy {label}...", "warn")
                 self.srt_status_var.set("Đang hủy...")
                 self.process_controller.cancel()
                 return

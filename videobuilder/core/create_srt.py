@@ -981,7 +981,7 @@ def install_srt_packages(*, log_callback=None) -> None:
     _log(log_callback, "Đang cài gói nhận dạng (Groq + Whisper)...")
     cmd = [
         sys.executable, "-m", "pip", "install",
-        "groq", WHISPER_NUMPY_SPEC, "faster-whisper",
+        "groq", WHISPER_NUMPY_SPEC, "faster-whisper", "edge-tts",
         "python-dotenv",
     ]
     try:

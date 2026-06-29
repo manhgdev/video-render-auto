@@ -35,7 +35,7 @@ from videobuilder.version import APP_VERSION
 class ShellMixin:
         def _apply_footer_mode(self, mode: str):
             """Chuyển footer giữa render (Dự án/Cài đặt) và SRT."""
-            is_srt = mode == "srt"
+            is_srt = mode in ("srt", "auto")
             self._footer_mode = mode
 
             if is_srt:
@@ -61,12 +61,15 @@ class ShellMixin:
             self.open_folder_btn.pack_forget()
             self.open_prompts_btn.pack_forget()
 
-            if is_srt:
+            if mode == "srt":
                 self.srt_create_btn.pack(side=tk.LEFT)
+            elif mode == "auto":
+                self._update_srt_open_buttons()
             else:
                 self.render_btn.pack(side=tk.LEFT)
 
-            self.preview_btn.pack(side=tk.LEFT, padx=(8, 0))
+            if mode != "auto":
+                self.preview_btn.pack(side=tk.LEFT, padx=(8, 0))
             self.pause_btn.pack(side=tk.LEFT, padx=(8, 0))
             self.cancel_btn.pack(side=tk.LEFT, padx=(4, 0))
             self.open_video_btn.pack(side=tk.LEFT, padx=(8, 0))
@@ -95,8 +98,8 @@ class ShellMixin:
                 panel.pack_forget()
             self._tab_panels[key].pack(fill=tk.BOTH, expand=True)
             self._render_footer.pack(side=tk.BOTTOM, fill=tk.X)
-            if key == "srt":
-                self._apply_footer_mode("srt")
+            if key in ("srt", "auto"):
+                self._apply_footer_mode(key)
                 self._refresh_whisper_status()
                 self._ensure_srt_packages_auto()
             else:
@@ -355,16 +358,19 @@ class ShellMixin:
             shells = self._build_tab_shell(body_outer)
             tab_files_shell = shells["files"]
             tab_opts_shell = shells["opts"]
+            tab_auto_shell = shells["auto"]
             tab_srt_shell = shells["srt"]
             tab_contact_shell = shells["contact"]
 
             tab_files = self._build_scroll_area(tab_files_shell)
             tab_opts = self._build_scroll_area(tab_opts_shell)
+            tab_auto = self._build_scroll_area(tab_auto_shell)
             tab_srt = self._build_scroll_area(tab_srt_shell)
             tab_contact_scroll = self._build_scroll_area(tab_contact_shell)
             tab_contact = ttk.Frame(tab_contact_scroll, style="Card.TFrame", padding=18)
             tab_contact.pack(fill=tk.BOTH, expand=True, anchor="nw")
             self._build_contact_tab(tab_contact)
+            self._build_auto_tab(tab_auto)
             self._build_srt_tab(tab_srt)
             self._sync_srt_model_hint()
             self._refresh_whisper_status()

@@ -534,15 +534,32 @@ class SrtTabMixin:
                 self._mirror_prompts_export_from_srt()
 
         def _update_srt_open_buttons(self):
-            if self._footer_mode != "srt":
+            mode = getattr(self, "_footer_mode", "render")
+            if mode not in ("srt", "auto"):
                 return
-            srt_target = self.last_srt_output or self.srt_output_var.get().strip()
-            prompts_target = self.last_prompts_output or self.srt_prompts_output_var.get().strip()
+            if mode == "auto":
+                srt_target = (
+                    self.last_srt_output
+                    or self.subtitle_var.get().strip()
+                    or self.srt_output_var.get().strip()
+                )
+                prompts_target = (
+                    self.last_prompts_output
+                    or self.prompts_var.get().strip()
+                    or self.srt_prompts_output_var.get().strip()
+                )
+            else:
+                srt_target = self.last_srt_output or self.srt_output_var.get().strip()
+                prompts_target = self.last_prompts_output or self.srt_prompts_output_var.get().strip()
             srt_ok = bool(srt_target and Path(srt_target).is_file())
             prompts_ok = bool(prompts_target and Path(prompts_target).is_file())
+            folder_ok = srt_ok or prompts_ok
+            if mode == "auto" and not folder_ok:
+                auto_dir = self.auto_output_dir_var.get().strip()
+                folder_ok = bool(auto_dir and Path(auto_dir).is_dir())
             state_srt = tk.NORMAL if srt_ok else tk.DISABLED
             self.open_video_btn.configure(state=state_srt)
-            self.open_folder_btn.configure(state=tk.NORMAL if (srt_ok or prompts_ok) else tk.DISABLED)
+            self.open_folder_btn.configure(state=tk.NORMAL if folder_ok else tk.DISABLED)
             if hasattr(self, "open_prompts_btn"):
                 self.open_prompts_btn.configure(state=tk.NORMAL if prompts_ok else tk.DISABLED)
 

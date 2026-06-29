@@ -7,6 +7,7 @@ from videobuilder.core.env_config import load_env
 from videobuilder.core.ffmpeg_setup import ensure_ffmpeg_on_path
 from videobuilder.core.pipeline import DEFAULT_PREVIEW_SECONDS, ENCODE_QUALITY_OPTIONS, ENCODER_OVERRIDE_OPTIONS, ZOOM_LEVEL_OPTIONS, detect_video_encoder
 from videobuilder.core.create_srt import DEFAULT_LANGUAGE, DEFAULT_MODEL, DEFAULT_SRT_SPLIT, SRT_SPLIT_KEY_TO_LABEL
+from videobuilder.core.automation import DEFAULT_AUTOMATION_PROMPT, DEFAULT_TTS_RATE, DEFAULT_TTS_VOICE
 from videobuilder.gui.constants import (
     C,
     EFFECT_KEY_TO_LABEL,
@@ -14,6 +15,7 @@ from videobuilder.gui.constants import (
     OUTPUT_STEM,
     RESOLUTION_UI,
 )
+from videobuilder.gui.auto_tab import AutoTabMixin
 from videobuilder.gui.dialogs import DialogMixin
 from videobuilder.gui.paths import default_output_path
 from videobuilder.gui.project_tab import ProjectTabMixin
@@ -31,6 +33,7 @@ class VideoBuilderApp(
     WidgetMixin,
     ShellMixin,
     ProjectTabMixin,
+    AutoTabMixin,
     SrtTabMixin,
     RenderTabMixin,
 ):
@@ -89,6 +92,13 @@ class VideoBuilderApp(
             self.srt_model_var = tk.StringVar(value=DEFAULT_MODEL)
             self.srt_language_var = tk.StringVar(value=DEFAULT_LANGUAGE)
             self.srt_split_var = tk.StringVar(value=SRT_SPLIT_KEY_TO_LABEL[DEFAULT_SRT_SPLIT])
+            self.auto_prompt_file_var = tk.StringVar(value=str(DEFAULT_AUTOMATION_PROMPT))
+            self.auto_output_dir_var = tk.StringVar()
+            self.auto_seed_var = tk.StringVar(value="start")
+            self.auto_script_var = tk.StringVar()
+            self.auto_voice_var = tk.StringVar(value=DEFAULT_TTS_VOICE)
+            self.auto_rate_var = tk.StringVar(value=DEFAULT_TTS_RATE)
+            self.auto_topic_history = []
             self.srt_model_hint_var = tk.StringVar()
             self.srt_status_var = tk.StringVar(value="Sẵn sàng nhận dạng")
             self.srt_percent_var = tk.StringVar(value="—")
@@ -110,6 +120,7 @@ class VideoBuilderApp(
             self.last_srt_output = None
             self.last_prompts_output = None
             self.srt_running = False
+            self.auto_running = False
             self.srt_paused = False
             self.whisper_ok = False
             self.whisper_installing = False
