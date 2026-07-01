@@ -5,8 +5,10 @@
 from __future__ import annotations
 
 import argparse
+import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -39,6 +41,20 @@ def bump_version() -> str:
     ).strip()
 
 
+def _prepare_workdir(workpath: Path) -> None:
+    """Xóa workdir cũ; retry khi Windows giữ file .pkg từ build trước."""
+    if not workpath.exists():
+        return
+    for attempt in range(5):
+        try:
+            shutil.rmtree(workpath)
+            return
+        except PermissionError:
+            if attempt == 4:
+                raise
+            time.sleep(1.5)
+
+
 def build_one(platform: str) -> Path:
     spec = ROOT / "release" / platform / "VideoBuilder.spec"
     if not spec.is_file():
@@ -50,7 +66,10 @@ def build_one(platform: str) -> Path:
             f"  → Hoặc push GitHub và chạy workflow «Build all platforms»"
         )
 
+    workpath = ROOT / "build" / platform
+    distpath = ROOT / "dist"
     print(f"=== VideoBuilder {platform} ===")
+    _prepare_workdir(workpath)
     subprocess.check_call(
         [sys.executable, "-m", "pip", "install", "-q", "--upgrade", "pip", "pyinstaller"],
         cwd=ROOT,
@@ -58,14 +77,14 @@ def build_one(platform: str) -> Path:
     subprocess.check_call(
         [
             sys.executable, "-m", "PyInstaller",
-            "--noconfirm", "--clean",
-            "--distpath", str(ROOT / "dist"),
-            "--workpath", str(ROOT / "build" / platform),
+            "--noconfirm",
+            "--distpath", str(distpath),
+            "--workpath", str(workpath),
             str(spec),
         ],
         cwd=ROOT,
     )
-    return ROOT / "dist"
+    return distpath
 
 
 def build_all_native(*, do_bump: bool) -> None:

@@ -10,7 +10,10 @@ from pathlib import Path
 from typing import Any
 
 from videobuilder.core.env_config import env_api_key
-from videobuilder.core.user_config import get_groq_model_cache_file, get_legacy_groq_model_cache_file
+from videobuilder.core.user_config import (
+    get_groq_model_cache_file,
+    get_legacy_groq_model_cache_file,
+)
 
 GROQ_LLM_MODEL_ENV = "GROQ_LLM_MODEL"
 GROQ_WHISPER_MODEL_ENV = "GROQ_WHISPER_MODEL"
@@ -78,7 +81,13 @@ def _parse_whisper_cache(data: dict[str, Any]) -> dict[str, str]:
 def _read_model_cache() -> dict[str, Any]:
     path = _groq_model_cache_path()
     legacy_path = get_legacy_groq_model_cache_file()
-    if not path.is_file() and legacy_path.is_file() and legacy_path != path:
+    # Chỉ migrate legacy khi đọc cache mặc định (tránh test/tmp path kéo cache dev).
+    if (
+        not path.is_file()
+        and legacy_path.is_file()
+        and legacy_path != path
+        and path.resolve() == get_groq_model_cache_file().resolve()
+    ):
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(legacy_path.read_text(encoding="utf-8"), encoding="utf-8")

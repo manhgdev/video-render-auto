@@ -7,6 +7,7 @@ tools/ffmpeg/
 .video_builder_settings.json
 .groq_active_models.json
 .venv/
+.venv-build/
 *.bk
 *.bk*
 **/*.bk*

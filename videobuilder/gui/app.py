@@ -25,7 +25,13 @@ from videobuilder.gui.render_tab import RenderTabMixin
 from videobuilder.gui.shell import ShellMixin
 from videobuilder.gui.srt_tab import SrtTabMixin
 from videobuilder.gui.widgets import WidgetMixin
-from videobuilder.gui.progress import ProgressColors
+from videobuilder.gui.progress import (
+    CanvasProgressBar,
+    DirectProgressTracker,
+    ProgressColors,
+    SmoothProgressTracker,
+    StatusPresenter,
+)
 from videobuilder.version import window_title
 
 
