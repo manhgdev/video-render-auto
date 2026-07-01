@@ -55,105 +55,6 @@ from videobuilder.gui.paths import default_output_folder, is_writable_output_dir
 
 
 class SrtTabMixin:
-        def _apply_groq_api_key(self, *, silent: bool = False):
-            set_groq_api_key(self.srt_groq_api_key_var.get())
-            if self._srt_whisper_btn_frame:
-                self._refresh_srt_engine_status()
-            if not silent:
-                self._save_settings()
-
-        def _clear_groq_api_key(self):
-            self.srt_groq_api_key_var.set("")
-            self._apply_groq_api_key()
-
-        def _check_groq_api_key(self):
-            if self.whisper_installing or self.srt_running:
-                return
-            self._apply_groq_api_key(silent=True)
-            self._refresh_srt_engine_status()
-            model = self.srt_model_var.get().strip() or DEFAULT_MODEL
-            groq_lang = "" if (self.srt_language_var.get().strip() or "auto") == "auto" else self.srt_language_var.get().strip()
-            status = check_whisper(model, language=groq_lang)
-            msg = self._format_srt_engine_status(status, model)
-            if status.get("groq"):
-                self._log(f"Groq OK — {msg}", "success")
-                self._show_info("Groq", msg)
-            elif groq_api_key():
-                self._log(msg, "warn")
-                self._show_warning("Groq", msg)
-            else:
-                self._show_warning("Groq", "Chưa có API key Groq.")
-
-        def _toggle_groq_key_visibility(self):
-            self._groq_key_hidden = not self._groq_key_hidden
-            if self.srt_groq_key_entry:
-                self.srt_groq_key_entry.configure(
-                    show="*" if self._groq_key_hidden else "",
-                )
-            if self.srt_groq_key_toggle_btn:
-                self.srt_groq_key_toggle_btn.configure(
-                    text="Hiện" if self._groq_key_hidden else "Ẩn",
-                )
-
-        def _api_key_block(
-            self,
-            parent,
-            column: int,
-            label: str,
-            textvar,
-            *,
-            apply_cmd,
-            clear_cmd,
-            check_cmd,
-            toggle_cmd,
-        ):
-            """Một cột API key: ô nhập + Hiện / Xóa / Kiểm tra (giống field xuất file)."""
-            block = ttk.Frame(parent, style="Card.TFrame")
-            block.grid(row=0, column=column, sticky="ew", padx=(0, 4) if column == 0 else (4, 0))
-            block.columnconfigure(0, weight=1)
-            block.columnconfigure(1, weight=0)
-
-            inner = tk.Frame(
-                block, bg=C["entry_bg"],
-                highlightbackground=C["border"], highlightthickness=1,
-            )
-            inner.grid(row=0, column=0, sticky="ew", padx=(0, 4))
-            inner.columnconfigure(1, weight=1)
-
-            tk.Label(
-                inner, text=label, font=self._font(8),
-                bg=C["entry_bg"], fg=C["muted"], width=5, anchor="w",
-            ).grid(row=0, column=0, sticky="w", padx=(6, 2), pady=3)
-
-            entry = tk.Entry(
-                inner, textvariable=textvar,
-                font=self._font(9), bg="#ffffff", fg=C["text"],
-                relief=tk.FLAT, borderwidth=1, highlightthickness=1,
-                highlightbackground=C["border"], highlightcolor=C["accent"],
-                show="*",
-            )
-            entry.grid(row=0, column=1, sticky="ew", padx=(0, 6), pady=3)
-            entry.bind("<FocusOut>", lambda _e: apply_cmd(silent=True))
-            entry.bind("<Return>", lambda _e: apply_cmd())
-
-            btns = ttk.Frame(block, style="Card.TFrame")
-            btns.grid(row=0, column=1, sticky="e")
-            toggle_btn = ttk.Button(
-                btns, text="Hiện", command=toggle_cmd,
-                style="Small.TButton", width=4,
-            )
-            toggle_btn.pack(side=tk.LEFT, padx=(0, 2))
-            ttk.Button(
-                btns, text="Xóa", command=clear_cmd,
-                style="Small.TButton", width=4,
-            ).pack(side=tk.LEFT, padx=(0, 2))
-            check_btn = ttk.Button(
-                btns, text="Kiểm tra", command=check_cmd,
-                style="Small.TButton", width=9,
-            )
-            check_btn.pack(side=tk.LEFT)
-            return entry, toggle_btn, check_btn
-
         def _srt_output_path_field(self, parent, row, label_width=SRT_FIELD_LABEL_WIDTH):
             return self._export_path_field(
                 parent, row, "File SRT xuất", "srt_output",
@@ -195,59 +96,10 @@ class SrtTabMixin:
             box.columnconfigure(1, weight=1)
 
             self._grid_field_label(
-                box, 0, "API key", "srt_whisper", label_width=label_width, col=0, pady=2,
-            )
-            keys_col = ttk.Frame(box, style="Card.TFrame")
-            keys_col.grid(row=0, column=1, columnspan=2, sticky="ew", pady=2)
-            keys_col.columnconfigure(0, weight=1)
-
-            self._groq_key_hidden = True
-            (
-                self.srt_groq_key_entry,
-                self.srt_groq_key_toggle_btn,
-                self.srt_groq_recheck_btn,
-            ) = self._api_key_block(
-                keys_col, 0, "Groq", self.srt_groq_api_key_var,
-                apply_cmd=self._apply_groq_api_key,
-                clear_cmd=self._clear_groq_api_key,
-                check_cmd=self._check_groq_api_key,
-                toggle_cmd=self._toggle_groq_key_visibility,
-            )
-
-            status_row = ttk.Frame(keys_col, style="Card.TFrame")
-            status_row.grid(row=1, column=0, sticky="ew", pady=(4, 0))
-            status_row.columnconfigure(0, weight=1)
-            status_row.columnconfigure(1, weight=0)
-
-            self._srt_whisper_inner = tk.Frame(
-                status_row, bg=C["entry_bg"],
-                highlightbackground=C["border"], highlightthickness=1,
-            )
-            self._srt_whisper_inner.grid(row=0, column=0, sticky="ew")
-            self._srt_whisper_inner.columnconfigure(0, weight=1)
-            self._srt_whisper_msg = tk.Label(
-                self._srt_whisper_inner, textvariable=self.whisper_status_var,
-                font=self._font(8), bg=C["entry_bg"], fg=C["muted"],
-                anchor="w", justify=tk.LEFT,
-            )
-            self._srt_whisper_msg.grid(row=0, column=0, sticky="ew", padx=6, pady=3)
-
-            self._srt_whisper_btn_frame = ttk.Frame(status_row, style="Card.TFrame")
-            self._srt_whisper_btn_frame.grid(row=0, column=1, sticky="e", padx=(4, 0))
-            self.srt_install_btn = ttk.Button(
-                self._srt_whisper_btn_frame, text="Cài đặt",
-                command=self._install_srt_packages, style="Small.TButton", width=7,
-            )
-            self.srt_recheck_btn = ttk.Button(
-                self._srt_whisper_btn_frame, text="Tải model",
-                command=self._install_fallback_model, style="Small.TButton", width=9,
-            )
-
-            self._grid_field_label(
-                box, 1, "Whisper", "srt_model", label_width=label_width, col=0, pady=2,
+                box, 0, "Whisper", "srt_model", label_width=label_width, col=0, pady=2,
             )
             fb_col = ttk.Frame(box, style="Card.TFrame")
-            fb_col.grid(row=1, column=1, columnspan=2, sticky="ew", pady=2)
+            fb_col.grid(row=0, column=1, columnspan=2, sticky="ew", pady=2)
             fb_col.columnconfigure(0, weight=2)
             fb_col.columnconfigure(1, weight=1)
             fb_col.columnconfigure(2, weight=1)
@@ -284,6 +136,35 @@ class SrtTabMixin:
                 bg=C["card"], fg=C["muted"], anchor="w",
             ).grid(row=1, column=0, columnspan=3, sticky="ew", pady=(2, 0))
 
+            status_row = ttk.Frame(box, style="Card.TFrame")
+            status_row.grid(row=2, column=0, columnspan=3, sticky="ew", pady=(6, 2))
+            status_row.columnconfigure(0, weight=1)
+            status_row.columnconfigure(1, weight=0)
+
+            self._srt_whisper_inner = tk.Frame(
+                status_row, bg=C["entry_bg"],
+                highlightbackground=C["border"], highlightthickness=1,
+            )
+            self._srt_whisper_inner.grid(row=0, column=0, sticky="ew")
+            self._srt_whisper_inner.columnconfigure(0, weight=1)
+            self._srt_whisper_msg = tk.Label(
+                self._srt_whisper_inner, textvariable=self.whisper_status_var,
+                font=self._font(8), bg=C["entry_bg"], fg=C["muted"],
+                anchor="w", justify=tk.LEFT,
+            )
+            self._srt_whisper_msg.grid(row=0, column=0, sticky="ew", padx=6, pady=3)
+
+            self._srt_whisper_btn_frame = ttk.Frame(status_row, style="Card.TFrame")
+            self._srt_whisper_btn_frame.grid(row=0, column=1, sticky="e", padx=(4, 0))
+            self.srt_install_btn = ttk.Button(
+                self._srt_whisper_btn_frame, text="Cài đặt",
+                command=self._install_srt_packages, style="Small.TButton", width=7,
+            )
+            self.srt_recheck_btn = ttk.Button(
+                self._srt_whisper_btn_frame, text="Tải model",
+                command=self._install_fallback_model, style="Small.TButton", width=9,
+            )
+
             self.srt_model_var.trace_add("write", lambda *_: self._sync_srt_model_hint())
             self.srt_language_var.trace_add("write", lambda *_: self._refresh_srt_engine_status())
 
@@ -301,7 +182,7 @@ class SrtTabMixin:
             elif groq_api_key():
                 groq = f"Groq STT {groq_stt} ✓ · LLM {llm_label}"
             else:
-                groq = "Groq: chưa có API key"
+                groq = "Groq: chưa có API key — tab API key"
 
             if status.get("local_ok"):
                 if status.get("model_cached"):
@@ -719,7 +600,7 @@ class SrtTabMixin:
             if not self.whisper_ok:
                 self._show_warning(
                     "Chưa sẵn sàng",
-                    "Nhập Groq API key hoặc bấm «Cài đặt».",
+                    "Cấu hình Groq API key ở tab API key, hoặc bấm «Cài đặt».",
                 )
                 return
 
@@ -790,6 +671,8 @@ class SrtTabMixin:
 
         def _set_srt_progress(self, pct, message):
             def update():
+                if self._srt_tracker is None:
+                    return
                 self._srt_tracker.report(float(pct), message or "")
 
             self.after(0, update)
@@ -804,7 +687,7 @@ class SrtTabMixin:
             self._update_srt_controls_locked()
 
         def _start_create_srt(self, preview=False):
-            if self.srt_running or self.rendering:
+            if self.srt_running or self.rendering or getattr(self, "img_running", False):
                 return
 
             audio = self.srt_audio_var.get().strip()
@@ -822,7 +705,7 @@ class SrtTabMixin:
                     return
                 self._show_warning(
                     "Chưa sẵn sàng",
-                    "Nhập Groq API key. Nếu thiếu gói — bấm «Cài đặt» (app tự cài khi mở tab).",
+                    "Cấu hình Groq API key ở tab API key. Nếu thiếu gói — bấm «Cài đặt».",
                 )
                 return
 
@@ -873,7 +756,7 @@ class SrtTabMixin:
                     return
                 if not groq_api_key():
                     self._show_warning(
-                        "Thiếu Groq API key",
+                        "Thiếu Groq API key — tab API key",
                         "Thêm GROQ_API_KEY vào .env hoặc nhập ô Groq trên tab Tạo SRT.",
                     )
                     return

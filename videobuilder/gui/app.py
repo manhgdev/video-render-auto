@@ -5,7 +5,7 @@ import tkinter as tk
 
 from videobuilder.core.env_config import load_env
 from videobuilder.core.ffmpeg_setup import ensure_ffmpeg_on_path
-from videobuilder.core.pipeline import DEFAULT_PREVIEW_SECONDS, ENCODE_QUALITY_OPTIONS, ENCODER_OVERRIDE_OPTIONS, ZOOM_LEVEL_OPTIONS, detect_video_encoder
+from videobuilder.core.pipeline import DEFAULT_PREVIEW_SECONDS, ENCODE_QUALITY_OPTIONS, ENCODER_OVERRIDE_OPTIONS, ZOOM_LEVEL_OPTIONS
 from videobuilder.core.create_srt import DEFAULT_LANGUAGE, DEFAULT_MODEL, DEFAULT_SRT_SPLIT, SRT_SPLIT_KEY_TO_LABEL
 from videobuilder.core.automation import DEFAULT_TTS_RATE, DEFAULT_TTS_VOICE, ensure_default_automation_prompt
 from videobuilder.gui.constants import (
@@ -15,8 +15,10 @@ from videobuilder.gui.constants import (
     OUTPUT_STEM,
     RESOLUTION_UI,
 )
+from videobuilder.gui.api_tab import ApiTabMixin
 from videobuilder.gui.auto_tab import AutoTabMixin
 from videobuilder.gui.dialogs import DialogMixin
+from videobuilder.gui.image_tab import ImageTabMixin
 from videobuilder.gui.paths import default_output_path
 from videobuilder.gui.project_tab import ProjectTabMixin
 from videobuilder.gui.render_tab import RenderTabMixin
@@ -33,8 +35,10 @@ class VideoBuilderApp(
     WidgetMixin,
     ShellMixin,
     ProjectTabMixin,
+    ApiTabMixin,
     AutoTabMixin,
     SrtTabMixin,
+    ImageTabMixin,
     RenderTabMixin,
 ):
         def __init__(self):
@@ -47,7 +51,10 @@ class VideoBuilderApp(
             load_env()
             from videobuilder.core.audio_pipeline import apply_env_api_keys
 
+            from videobuilder.core.generate_images import apply_env_gemini_key
+
             apply_env_api_keys()
+            apply_env_gemini_key()
             from videobuilder.core.groq_models import load_cached_groq_models
 
             load_cached_groq_models(force_reload=True)
@@ -83,8 +90,10 @@ class VideoBuilderApp(
             self.srt_output_var = tk.StringVar()
             self.srt_output_dir_var = tk.StringVar()
             self.srt_output_name_var = tk.StringVar(value="subtitle")
-            self.srt_groq_api_key_var = tk.StringVar()
-            self.srt_gemini_api_key_var = tk.StringVar()
+            self.groq_api_key_var = tk.StringVar()
+            self.gemini_api_key_var = tk.StringVar()
+            self.groq_api_status_var = tk.StringVar(value="Đang kiểm tra Groq...")
+            self.gemini_api_status_var = tk.StringVar(value="Đang kiểm tra Gemini...")
             self.srt_prompts_output_var = tk.StringVar()
             self.srt_prompts_output_dir_var = tk.StringVar()
             self.srt_prompts_output_name_var = tk.StringVar(value="subtitle")
@@ -100,6 +109,11 @@ class VideoBuilderApp(
             self.auto_voice_var = tk.StringVar(value=DEFAULT_TTS_VOICE)
             self.auto_rate_var = tk.StringVar(value=DEFAULT_TTS_RATE)
             self.auto_topic_history = []
+            self.img_prompts_var = tk.StringVar()
+            self.img_output_dir_var = tk.StringVar()
+            self.img_aspect_var = tk.StringVar(value="Tự động")
+            self.img_skip_existing_var = tk.BooleanVar(value=True)
+            self.img_engine_status_var = tk.StringVar(value="Đang kiểm tra Gemini...")
             self.srt_model_hint_var = tk.StringVar()
             self.srt_status_var = tk.StringVar(value="Sẵn sàng nhận dạng")
             self.srt_percent_var = tk.StringVar(value="—")
@@ -109,8 +123,6 @@ class VideoBuilderApp(
             self.ffmpeg_status_var = tk.StringVar()
 
             ensure_ffmpeg_on_path()
-            encoder, label = detect_video_encoder()
-            self.encoder_info_var.set(f"{label} · {encoder}")
 
             self.rendering = False
             self.render_paused = False
@@ -122,18 +134,21 @@ class VideoBuilderApp(
             self.last_prompts_output = None
             self.srt_running = False
             self.auto_running = False
+            self.img_running = False
+            self.img_installing = False
+            self.img_engine_ok = False
             self.srt_paused = False
             self.whisper_ok = False
             self.whisper_installing = False
-            self.srt_groq_key_entry = None
-            self.srt_groq_key_toggle_btn = None
-            self.srt_groq_recheck_btn = None
-            self.srt_gemini_key_entry = None
-            self.srt_gemini_key_toggle_btn = None
-            self.srt_gemini_recheck_btn = None
+            self.groq_key_entry = None
+            self.groq_key_toggle_btn = None
+            self.gemini_key_entry = None
+            self.gemini_key_toggle_btn = None
             self._groq_key_hidden = True
             self._gemini_key_hidden = True
             self._srt_packages_auto_started = False
+            self._img_packages_auto_started = False
+            self.img_create_btn = None
             self.whisper_status_var = tk.StringVar(value="Đang kiểm tra Groq / Whisper...")
             self._progress_colors: ProgressColors | None = None
             self._render_bar: CanvasProgressBar | None = None

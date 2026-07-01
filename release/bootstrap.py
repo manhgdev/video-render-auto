@@ -4,9 +4,52 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import sys
+from pathlib import Path
+
+
+def project_root() -> Path:
+    return Path(__file__).resolve().parent.parent
+
+
+def venv_python(root: Path | None = None) -> Path:
+    root = root or project_root()
+    if sys.platform == "win32":
+        return root / ".venv" / "Scripts" / "python.exe"
+    return root / ".venv" / "bin" / "python"
+
+
+def should_use_project_venv() -> bool:
+    """Homebrew / PEP 668: dùng .venv thay vì pip vào system Python."""
+    if os.environ.get("VIRTUAL_ENV"):
+        return False
+    if sys.prefix != sys.base_prefix:
+        return False
+    if not sys.platform.startswith("darwin"):
+        return False
+    externally_managed = (
+        Path(sys.base_prefix)
+        / "lib"
+        / f"python{sys.version_info.major}.{sys.version_info.minor}"
+        / "EXTERNALLY-MANAGED"
+    )
+    return externally_managed.exists()
+
+
+def maybe_reexec_into_project_venv(script: str, argv: list[str] | None = None) -> None:
+    if not should_use_project_venv():
+        return
+    root = project_root()
+    py = venv_python(root)
+    if not py.exists():
+        import venv
+
+        venv.EnvBuilder(with_pip=True).create(root / ".venv")
+    args = argv if argv is not None else sys.argv
+    os.execv(str(py), [str(py), script, *args[1:]])
 
 
 def check_python() -> None:

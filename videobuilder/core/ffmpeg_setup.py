@@ -85,12 +85,34 @@ def _discover_bin_dirs() -> list[Path]:
     return unique
 
 
+def ffmpeg_install_hint() -> str:
+    if sys.platform == "darwin":
+        return "cài thủ công: brew install ffmpeg"
+    if sys.platform == "win32":
+        return "bấm «Cài FFmpeg» hoặc: winget install Gyan.FFmpeg"
+    return "cài thủ công ffmpeg + ffprobe (apt/dnf/pacman...)"
+
+
+def ffmpeg_can_auto_install() -> bool:
+    return sys.platform == "win32"
+
+
 def ensure_ffmpeg_on_path() -> bool:
     for bin_dir in _discover_bin_dirs():
         path_str = str(bin_dir)
         current = os.environ.get("PATH", "")
         if path_str.lower() not in current.lower():
             os.environ["PATH"] = path_str + os.pathsep + current
+
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg and not shutil.which("ffprobe"):
+        sibling = Path(ffmpeg).resolve().parent / "ffprobe"
+        if sibling.is_file():
+            path_str = str(sibling.parent)
+            current = os.environ.get("PATH", "")
+            if path_str.lower() not in current.lower():
+                os.environ["PATH"] = path_str + os.pathsep + current
+
     return bool(shutil.which("ffmpeg") and shutil.which("ffprobe"))
 
 
@@ -135,7 +157,7 @@ def check_ffmpeg() -> dict:
         "ffprobe": None,
         "version": None,
         "short": None,
-        "message": "Chưa có FFmpeg — cần cài để render video",
+        "message": f"Chưa có FFmpeg — {ffmpeg_install_hint()}",
     }
 
 
@@ -258,9 +280,13 @@ def install_ffmpeg(progress_callback=None) -> dict:
             progress_callback(message)
 
     if sys.platform != "win32":
+        status = check_ffmpeg()
+        if status["ok"]:
+            log(status["message"])
+            return status
         return {
-            **check_ffmpeg(),
-            "message": "Tự cài FFmpeg hiện chỉ hỗ trợ Windows. Cài thủ công: ffmpeg.org",
+            **status,
+            "message": f"App không tự cài FFmpeg trên hệ điều hành này. {ffmpeg_install_hint().capitalize()}.",
         }
 
     status = check_ffmpeg()

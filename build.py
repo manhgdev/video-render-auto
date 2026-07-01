@@ -10,6 +10,11 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
+
+from release.bootstrap import maybe_reexec_into_project_venv  # noqa: E402
+
+maybe_reexec_into_project_venv(__file__)
+
 sys.path.insert(0, str(ROOT))
 
 from release.bootstrap import detect_platform, ensure_python  # noqa: E402

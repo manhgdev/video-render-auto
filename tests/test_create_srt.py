@@ -252,15 +252,22 @@ def test_check_whisper_with_groq_key(monkeypatch):
     assert "Groq" in result["message"]
 
 
-def test_ensure_whisper_raises_without_package():
-    try:
-        from videobuilder.core.create_srt import ensure_whisper
+def test_ensure_whisper_raises_without_package(monkeypatch):
+    import builtins
 
-        ensure_whisper()
-    except CreateSrtError as err:
-        assert "faster-whisper" in str(err)
-    else:
-        pytest.skip("faster-whisper installed")
+    import videobuilder.core.create_srt as mod
+
+    monkeypatch.setattr(mod, "whisper_numpy_message", lambda: None)
+    real_import = builtins.__import__
+
+    def fail_faster_whisper(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "faster_whisper":
+            raise ImportError("no faster_whisper")
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", fail_faster_whisper)
+    with pytest.raises(CreateSrtError, match="Chưa cài gói Whisper"):
+        mod.ensure_whisper()
 
 
 def test_is_cublas_dll_error():

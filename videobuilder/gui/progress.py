@@ -120,6 +120,24 @@ def short_srt_status(message: str) -> str:
         return "Đang xử lý..."
     if msg.startswith(("Hoàn thành", "Xong")):
         return "Hoàn thành!"
+    if msg.startswith("Gemini ảnh"):
+        return "Gemini tạo ảnh..."
+    if msg.startswith("Gemini"):
+        return "Gemini..."
+    if msg.startswith("Groq LLM"):
+        return "Groq LLM..."
+    if msg.startswith("Groq đề xuất"):
+        return "Groq đề xuất chủ đề..."
+    if msg.startswith("Groq viết script"):
+        return "Groq viết script..."
+    if msg.startswith("TTS edge-tts"):
+        return "TTS edge-tts..."
+    if msg.startswith("yt-dlp"):
+        return "yt-dlp tải YouTube..."
+    if msg.startswith("Phân tích YouTube"):
+        return "Phân tích YouTube..."
+    if msg.startswith("Bắt đầu pipeline"):
+        return "Pipeline tự động..."
     if msg.startswith("Groq"):
         return "Groq nhận dạng..."
     if msg.startswith("Chuẩn bị audio cho Groq") or msg.startswith("Chuẩn bị Groq"):

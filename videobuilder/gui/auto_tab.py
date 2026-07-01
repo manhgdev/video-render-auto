@@ -19,7 +19,9 @@ from videobuilder.core.automation import (
     suggest_topics,
 )
 from videobuilder.core.pipeline import ProcessController
-from videobuilder.gui.constants import C, SRT_FIELD_LABEL_WIDTH
+from videobuilder.core.progress import reset_progress_floor
+from videobuilder.core.youtube_import import analyze_youtube_to_prompts
+from videobuilder.gui.constants import C
 from videobuilder.gui.paths import default_output_folder, is_writable_output_dir
 
 
@@ -35,6 +37,8 @@ class AutoTabMixin:
         def _auto_busy_reason(self) -> str:
             if self.auto_running:
                 return "Pipeline tự động đang chạy."
+            if getattr(self, "img_running", False):
+                return "Đang tạo ảnh — chờ xong hoặc bấm Hủy."
             if self.srt_running:
                 return "Đang chạy tạo SRT — chờ xong hoặc bấm Hủy."
             if self.rendering:
@@ -86,61 +90,45 @@ class AutoTabMixin:
             if not url:
                 self._show_warning("Thiếu URL", "Dán URL YouTube trước khi phân tích video.")
                 return
-            self._show_info(
-                "Chưa hỗ trợ",
-                "Luồng URL YouTube cần backend tải/phân tích video. UI đã tách đúng quy trình, "
-                "nhưng phần xử lý URL chưa có trong core hiện tại.",
-            )
+            try:
+                prompt_file, output_dir = self._auto_validate_common()
+            except ValueError as err:
+                self._show_warning("Tự động", str(err))
+                return
+
+            def task():
+                return analyze_youtube_to_prompts(
+                    url,
+                    output_dir,
+                    production_prompt_path=prompt_file,
+                    progress_callback=self._set_auto_progress,
+                    log_callback=self._log,
+                    process_controller=self.process_controller,
+                )
+
+            self._run_auto_worker("Phân tích YouTube", task)
+
+        def _auto_panel(self, parent, title: str) -> ttk.Frame:
+            return self._section_panel(parent, title)
 
         def _auto_button(self, parent, text, command, *, kind="primary"):
-            palettes = {
-                "primary": ("#2563eb", "#ffffff", "#1d4ed8"),
-                "secondary": ("#eef2ff", "#1e40af", "#dbeafe"),
-                "ghost": ("#f8fafc", "#334155", "#e2e8f0"),
-            }
-            bg, fg, hover = palettes.get(kind, palettes["ghost"])
-            btn = tk.Label(
-                parent,
-                text=text,
-                bg=bg,
-                fg=fg,
-                font=self._font(10, "bold" if kind == "primary" else "normal"),
-                padx=16,
-                pady=8,
-                cursor="hand2",
-                anchor="center",
-            )
+            btn = self._pill_button(parent, text, command, kind=kind)
             btn._auto_enabled = True
-            btn._auto_bg = bg
-            btn._auto_fg = fg
-            btn._auto_hover = hover
+            btn._auto_bg = btn._pill_bg
+            btn._auto_fg = btn._pill_fg
+            btn._auto_hover = btn._pill_hover
             btn._auto_command = command
-
-            def invoke(_event=None):
-                if getattr(btn, "_auto_enabled", True):
-                    command()
-
-            def enter(_event=None):
-                if getattr(btn, "_auto_enabled", True):
-                    btn.configure(bg=hover)
-
-            def leave(_event=None):
-                if getattr(btn, "_auto_enabled", True):
-                    btn.configure(bg=bg)
-
-            btn.bind("<Button-1>", invoke)
-            btn.bind("<Enter>", enter)
-            btn.bind("<Leave>", leave)
             return btn
 
         def _set_auto_button_enabled(self, button, enabled: bool):
             if button is None:
                 return
             button._auto_enabled = enabled
+            button._pill_enabled = enabled
             if enabled:
                 button.configure(
-                    bg=getattr(button, "_auto_bg", "#eef2ff"),
-                    fg=getattr(button, "_auto_fg", C["text"]),
+                    bg=getattr(button, "_auto_bg", getattr(button, "_pill_bg", "#eef2ff")),
+                    fg=getattr(button, "_auto_fg", getattr(button, "_pill_fg", C["text"])),
                     cursor="hand2",
                 )
             else:
@@ -192,6 +180,9 @@ class AutoTabMixin:
             self._set_auto_button_enabled(self.auto_youtube_btn, enabled)
             self._update_render_control_buttons()
 
+        def _set_auto_progress(self, pct, message):
+            self._set_srt_progress(pct, message)
+
         def _run_auto_worker(self, title: str, target):
             busy = self._auto_busy_reason()
             if busy:
@@ -199,6 +190,8 @@ class AutoTabMixin:
                 return
             if not self._check_auto_groq_ready():
                 return
+            reset_progress_floor()
+            self._apply_footer_mode("auto")
             self._set_auto_running(True)
             self.srt_running = True
             self.srt_paused = False
@@ -207,6 +200,7 @@ class AutoTabMixin:
             if self._srt_tracker is not None:
                 self._srt_tracker.reset(0.0)
             self.srt_status_var.set(title)
+            self._set_auto_progress(1, title)
             self._log(f"——— {title} ———", "info")
 
             def worker():
@@ -287,7 +281,7 @@ class AutoTabMixin:
             self._save_settings()
             self._show_info(
                 "Tự động xong",
-                "Đã tạo script, audio, SRT và file tạo ảnh.\n\n"
+                "Đã tạo audio, SRT và file tạo ảnh.\n\n"
                 "Bạn tạo ảnh theo file .txt, đặt vào thư mục ảnh rồi bấm RENDER.",
             )
 
@@ -306,6 +300,7 @@ class AutoTabMixin:
                     output_dir=output_dir,
                     exclude_topics=self._auto_excluded_topics(output_dir),
                     log_callback=self._log,
+                    progress_callback=self._set_auto_progress,
                 )
 
             self._run_auto_worker("Gợi ý chủ đề", task)
@@ -328,7 +323,7 @@ class AutoTabMixin:
                     output_dir,
                     voice=self.auto_voice_var.get().strip() or DEFAULT_TTS_VOICE,
                     rate=self.auto_rate_var.get().strip() or DEFAULT_TTS_RATE,
-                    progress_callback=self._set_srt_progress,
+                    progress_callback=self._set_auto_progress,
                     log_callback=self._log,
                     process_controller=self.process_controller,
                 )
@@ -346,85 +341,124 @@ class AutoTabMixin:
 
         def _build_auto_tab(self, parent):
             parent.columnconfigure(0, weight=1)
-            parent.columnconfigure(1, weight=1)
+            parent.rowconfigure(1, weight=1)
 
-            lw = SRT_FIELD_LABEL_WIDTH
+            lw = 11
 
-            self._grid_field_label(parent, 0, "Prompt mẫu", label_width=lw)
-            prompt_row = ttk.Frame(parent, style="Card.TFrame")
-            prompt_row.grid(row=0, column=1, columnspan=2, sticky="ew", pady=3)
-            prompt_row.columnconfigure(0, weight=1)
-            ttk.Entry(prompt_row, textvariable=self.auto_prompt_file_var).grid(row=0, column=0, sticky="ew", padx=(0, 6))
-            self._auto_button(prompt_row, "Chọn", self._pick_auto_prompt_file, kind="ghost").grid(row=0, column=1, padx=(0, 4))
-            self._auto_button(prompt_row, "Mở", self._open_auto_prompt_file, kind="secondary").grid(row=0, column=2)
+            settings = ttk.Frame(parent, style="Card.TFrame")
+            settings.grid(row=0, column=0, sticky="ew", pady=(0, 6))
+            settings.columnconfigure(1, weight=1)
+            settings.columnconfigure(3, weight=1)
 
-            self._path_field(
-                parent, 1, "Thư mục xuất", self.auto_output_dir_var,
-                self._pick_auto_output_dir, label_width=lw,
+            self._grid_field_label(
+                settings, 0, "Prompt mẫu", label_width=lw, pady=2, col=0,
+                help_key="auto_prompt",
             )
+            prompt_row = ttk.Frame(settings, style="Card.TFrame")
+            prompt_row.grid(row=0, column=1, sticky="ew", pady=2, padx=(0, 10))
+            prompt_row.columnconfigure(0, weight=1)
+            ttk.Entry(prompt_row, textvariable=self.auto_prompt_file_var).grid(
+                row=0, column=0, sticky="ew", padx=(0, 4),
+            )
+            ttk.Button(
+                prompt_row, text="Chọn", command=self._pick_auto_prompt_file,
+                style="Small.TButton", width=5,
+            ).grid(row=0, column=1, padx=(0, 2))
+            ttk.Button(
+                prompt_row, text="Mở", command=self._open_auto_prompt_file,
+                style="Small.TButton", width=4,
+            ).grid(row=0, column=2)
 
-            ttk.Separator(parent, orient=tk.HORIZONTAL).grid(row=2, column=0, columnspan=3, sticky="ew", pady=(10, 8))
+            self._grid_field_label(
+                settings, 0, "Thư mục xuất", label_width=lw, pady=2, col=2,
+                help_key="auto_output_dir",
+            )
+            output_row = ttk.Frame(settings, style="Card.TFrame")
+            output_row.grid(row=0, column=3, sticky="ew", pady=2)
+            output_row.columnconfigure(0, weight=1)
+            ttk.Entry(output_row, textvariable=self.auto_output_dir_var).grid(
+                row=0, column=0, sticky="ew", padx=(0, 4),
+            )
+            ttk.Button(
+                output_row, text="Chọn", command=self._pick_auto_output_dir,
+                style="Small.TButton", width=5,
+            ).grid(row=0, column=1)
 
-            tk.Label(
-                parent, text="1. Từ URL YouTube", bg=C["card"], fg=C["text"],
-                font=self._font(10, "bold"), anchor="w",
-            ).grid(row=3, column=0, columnspan=3, sticky="ew", pady=(0, 4))
+            workflows = ttk.Frame(parent, style="Card.TFrame")
+            workflows.grid(row=1, column=0, sticky="nsew")
+            workflows.columnconfigure(0, weight=1, uniform="auto_flow")
+            workflows.columnconfigure(1, weight=1, uniform="auto_flow")
+            workflows.rowconfigure(0, weight=1)
 
-            self._grid_field_label(parent, 4, "URL YouTube", label_width=lw)
-            youtube_box = ttk.Entry(parent, textvariable=self.auto_youtube_url_var)
-            youtube_box.grid(row=4, column=1, columnspan=2, sticky="ew", pady=3)
+            yt_wrap, yt_body = self._auto_panel(workflows, "① Từ URL YouTube")
+            yt_wrap.grid(row=0, column=0, sticky="nsew", padx=(0, 4))
+            yt_body.columnconfigure(0, weight=1)
+            yt_label = self._muted_label_with_help(yt_body, "URL YouTube", help_key="auto_youtube")
+            yt_label.grid(row=0, column=0, sticky="w", pady=(0, 2))
+            youtube_box = ttk.Entry(yt_body, textvariable=self.auto_youtube_url_var)
+            youtube_box.grid(row=1, column=0, sticky="ew", pady=(0, 6))
             self.auto_youtube_text = youtube_box
-
             self.auto_youtube_btn = self._auto_button(
-                parent, "Phân tích video → prompt ảnh", self._auto_analyze_youtube,
+                yt_body, "Phân tích → prompt ảnh", self._auto_analyze_youtube,
                 kind="primary",
             )
-            self.auto_youtube_btn.grid(row=5, column=1, sticky="w", pady=(4, 8))
+            self.auto_youtube_btn.grid(row=2, column=0, sticky="w")
 
-            ttk.Separator(parent, orient=tk.HORIZONTAL).grid(row=6, column=0, columnspan=3, sticky="ew", pady=(8, 8))
+            topic_wrap, topic_body = self._auto_panel(workflows, "② Từ ý tưởng / chủ đề")
+            topic_wrap.grid(row=0, column=1, sticky="nsew", padx=(4, 0))
+            topic_body.columnconfigure(0, weight=1)
+            topic_body.rowconfigure(5, weight=1)
 
-            tk.Label(
-                parent, text="2. Từ ý tưởng / chủ đề", bg=C["card"], fg=C["text"],
-                font=self._font(10, "bold"), anchor="w",
-            ).grid(row=7, column=0, columnspan=3, sticky="ew", pady=(0, 4))
-
-            self._grid_field_label(parent, 8, "Giọng đọc", label_width=lw)
-            voice_row = ttk.Frame(parent, style="Card.TFrame")
-            voice_row.grid(row=8, column=1, columnspan=2, sticky="ew", pady=3)
-            voice_row.columnconfigure(0, weight=1)
-            voice_combo = ttk.Combobox(
+            voice_row = ttk.Frame(topic_body, style="Card.TFrame")
+            voice_row.grid(row=0, column=0, sticky="ew", pady=(0, 4))
+            voice_row.columnconfigure(1, weight=1)
+            voice_label = self._muted_label_with_help(voice_row, "Giọng", help_key="auto_voice")
+            voice_label.grid(row=0, column=0, sticky="w", padx=(0, 6))
+            ttk.Combobox(
                 voice_row,
                 textvariable=self.auto_voice_var,
                 values=TTS_VOICE_OPTIONS,
                 state="normal",
-                height=9,
+                height=6,
+            ).grid(row=0, column=1, sticky="ew", padx=(0, 8))
+            rate_label = self._muted_label_with_help(voice_row, "Tốc độ", help_key="auto_rate")
+            rate_label.grid(row=0, column=2, sticky="w", padx=(0, 4))
+            ttk.Entry(voice_row, textvariable=self.auto_rate_var, width=6).grid(
+                row=0, column=3, sticky="e",
             )
-            voice_combo.grid(row=0, column=0, sticky="ew", padx=(0, 8))
-            ttk.Label(voice_row, text="Tốc độ", style="Field.TLabel").grid(row=0, column=1, sticky="w", padx=(0, 6))
-            ttk.Entry(voice_row, textvariable=self.auto_rate_var, width=8).grid(row=0, column=2, sticky="ew")
 
-            self._grid_field_label(parent, 9, "Ý tưởng", label_width=lw)
-            input_box = ttk.Entry(parent, textvariable=self.auto_seed_var)
-            input_box.grid(row=9, column=1, columnspan=2, sticky="ew", pady=3)
+            seed_label = self._muted_label_with_help(
+                topic_body, "Ý tưởng / chủ đề", help_key="auto_seed",
+            )
+            seed_label.grid(row=1, column=0, sticky="w", pady=(0, 2))
+            input_box = ttk.Entry(topic_body, textvariable=self.auto_seed_var)
+            input_box.grid(row=2, column=0, sticky="ew", pady=(0, 6))
             seed = self.auto_seed_var.get().strip()
             if seed.lower() == "start":
                 self.auto_seed_var.set("")
             self.auto_seed_text = input_box
 
-            btn_row = ttk.Frame(parent, style="Card.TFrame")
-            btn_row.grid(row=10, column=1, columnspan=2, sticky="w", pady=(4, 8))
-            self.auto_topics_btn = self._auto_button(btn_row, "Tạo 5 chủ đề", self._auto_suggest_topics, kind="secondary")
-            self.auto_topics_btn.pack(side=tk.LEFT, padx=(0, 8))
-            self.auto_next_btn = self._auto_button(btn_row, "Chạy đến prompt ảnh", self._auto_next, kind="primary")
+            btn_row = ttk.Frame(topic_body, style="Card.TFrame")
+            btn_row.grid(row=3, column=0, sticky="w", pady=(0, 6))
+            self.auto_topics_btn = self._auto_button(
+                btn_row, "Tạo 5 chủ đề", self._auto_suggest_topics, kind="secondary",
+            )
+            self.auto_topics_btn.pack(side=tk.LEFT, padx=(0, 6))
+            self.auto_next_btn = self._auto_button(
+                btn_row, "Chạy đến prompt ảnh", self._auto_next, kind="primary",
+            )
             self.auto_next_btn.pack(side=tk.LEFT)
 
-            self._grid_field_label(parent, 11, "Chủ đề", label_width=lw)
-            list_frame = ttk.Frame(parent, style="Card.TFrame")
-            list_frame.grid(row=11, column=1, columnspan=2, sticky="nsew", pady=3)
+            topics_label = self._muted_label_with_help(
+                topic_body, "Danh sách chủ đề (double-click để chạy)", help_key="auto_topics",
+            )
+            topics_label.grid(row=4, column=0, sticky="w", pady=(0, 2))
+            list_frame = ttk.Frame(topic_body, style="Card.TFrame")
+            list_frame.grid(row=5, column=0, sticky="nsew")
             list_frame.columnconfigure(0, weight=1)
             list_frame.rowconfigure(0, weight=1)
             topics = tk.Listbox(
-                list_frame, height=5, font=self._font(10), activestyle="dotbox",
+                list_frame, height=6, font=self._font(10), activestyle="dotbox",
                 bg="#f8fafc", fg=C["text"], selectbackground=C["accent"],
                 selectforeground="#ffffff", highlightbackground=C["border"],
                 highlightthickness=1, relief=tk.FLAT,

@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 from pathlib import Path
 
+from videobuilder.core.env_config import GEMINI_API_KEY_ENV
 from videobuilder.core.pipeline import ENCODE_QUALITY_OPTIONS, TRANSITION_EFFECTS, ZOOM_LEVEL_OPTIONS, ENCODER_OVERRIDE_OPTIONS
 
 OUTPUT_BASENAME = "output.mp4"
@@ -72,6 +73,8 @@ TAB_ITEMS = (
     ("opts", "Cài đặt"),
     ("auto", "Tự động"),
     ("srt", "Tạo SRT"),
+    ("image", "Tạo ảnh"),
+    ("api", "API key"),
     ("contact", "Liên hệ"),
 )
 
@@ -81,6 +84,7 @@ FIELD_HELP = {
         "Chứa ảnh từng scene, khớp số scene trong file prompt.\n\n"
         "Đặt tên:\n"
         "• NNN_tên.jpg — scene thường (001, 002, ...)\n"
+        "• tên_bất_kỳ_N.png — số thứ tự ở cuối (vd. Bulk_img_gen_..._1.png)\n"
         "• 001_...CHARACTER REFERENCE... — ảnh nhân vật cho scene 1\n\n"
         "Ví dụ:\n"
         "  001_manh1.jpg\n"
@@ -159,9 +163,9 @@ FIELD_HELP = {
     "encoder": (
         "Encoder",
         "Bộ mã hóa video.\n\n"
-        "• Tự động — GPU nếu có (NVENC / AMF / QSV), không thì CPU\n"
+        "• Tự động — GPU nếu có (NVENC / AMF / QSV / VAAPI / VideoToolbox), không thì CPU\n"
         "• libx264 — CPU, tương thích cao\n"
-        "• h264_nvenc / amf / qsv — GPU",
+        "• h264_nvenc / amf / qsv / vaapi / videotoolbox — GPU",
     ),
     "speed": (
         "Speed (%)",
@@ -243,12 +247,29 @@ FIELD_HELP = {
         "• 1 — nền + viền mảnh\n"
         "• 2 — nền đậm hơn",
     ),
-    "srt_whisper": (
-        "API key",
-        "Groq free tier: STT (Whisper) + LLM (prompt ảnh visual beat).\n\n"
-        "Lấy key tại console.groq.com\n"
-        "Hiện/Ẩn · Xóa · Kiểm tra · Cài đặt gói groq + Whisper.\n"
+    "api_groq": (
+        "Groq API key",
+        "API key lấy tại console.groq.com (free tier).\n\n"
+        "• STT: Groq Whisper (ưu tiên)\n"
+        "• Timeline: Groq LLM (prompt ảnh visual beat)\n"
+        "• Rate limit / hết quota → faster-whisper local\n\n"
         "Có thể dùng GROQ_API_KEY trong .env.",
+    ),
+    "api_groq_status": (
+        "Trạng thái Groq",
+        "Tóm tắt sẵn sàng Groq LLM và gói groq.\n\n"
+        "STT chi tiết xem ở tab Tạo SRT.",
+    ),
+    "api_gemini": (
+        "Gemini API key",
+        f"Key Google AI Studio ({GEMINI_API_KEY_ENV}) để tạo ảnh scene.\n\n"
+        "• Thêm vào .env hoặc nhập trực tiếp\n"
+        "• Lần đầu có thể tự cài google-genai\n"
+        "• Model: gemini-2.5-flash-image (+ fallback 3.1 / 3-pro)",
+    ),
+    "api_gemini_status": (
+        "Trạng thái Gemini",
+        "Kiểm tra key và gói google-genai trước khi tạo ảnh.",
     ),
     "srt_groq_api_key": (
         "Groq API key",
@@ -307,5 +328,92 @@ FIELD_HELP = {
         "• Khá ngắt — như Nhiều ngắt, thêm tách dấu phẩy\n"
         "• Rất ngắt — dòng ngắn, tách dấu phẩy (kiểu Shorts)\n\n"
         "Đã có .srt → «Áp dụng» (vài giây). Nhận dạng mới chỉ khi tạo SRT.",
+    ),
+    "auto_prompt": (
+        "Prompt mẫu",
+        "File .txt hướng dẫn AI viết script và prompt ảnh.\n\n"
+        "• Chọn — mở file có sẵn\n"
+        "• Mở — xem/sửa trong app ngoài\n"
+        "• Mặc định: template trong thư mục public/templates\n\n"
+        "Dùng cho cả gợi ý chủ đề và chạy pipeline đến file tạo ảnh.",
+    ),
+    "auto_output_dir": (
+        "Thư mục xuất",
+        "Thư mục lưu script, audio, SRT và file tạo ảnh.\n\n"
+        "Mỗi chủ đề tạo một thư mục con.\n"
+        "Cần quyền ghi — nếu lỗi, chọn thư mục khác (vd. Downloads).",
+    ),
+    "auto_youtube": (
+        "URL YouTube",
+        "Dán link video YouTube — app tải audio bằng yt-dlp.\n\n"
+        "• Có phụ đề → tạo thẳng file prompt ảnh\n"
+        "• Phụ đề lỗi / 429 / không có → Groq nhận dạng audio\n\n"
+        "Cần FFmpeg + Groq API. Lần đầu có thể tự cài yt-dlp.",
+    ),
+    "auto_voice": (
+        "Giọng đọc",
+        "Giọng Edge TTS (Microsoft) khi tạo audio từ script.\n\n"
+        "• vi-VN-HoaiMyNeural / NamMinhNeural — tiếng Việt\n"
+        "• en-US-* — tiếng Anh\n\n"
+        "Có thể gõ tên giọng khác nếu biết mã chính xác.",
+    ),
+    "auto_rate": (
+        "Tốc độ TTS",
+        "Tốc độ đọc so với mặc định.\n\n"
+        "• +0% — bình thường\n"
+        "• +10% — nhanh hơn\n"
+        "• -10% — chậm hơn\n\n"
+        "Ví dụ: +0%, +15%, -5%",
+    ),
+    "auto_seed": (
+        "Ý tưởng / chủ đề",
+        "Gợi ý ban đầu để AI đề xuất 5 chủ đề video.\n\n"
+        "• Để trống hoặc gõ «start» — AI tự nghĩ hướng mới\n"
+        "• Gõ chủ đề cụ thể — nhận biến thể / góc kể khác\n\n"
+        "Sau khi có danh sách — chọn một dòng rồi «Chạy đến prompt ảnh».",
+    ),
+    "auto_topics": (
+        "Danh sách chủ đề",
+        "5 chủ đề do AI gợi ý từ prompt mẫu và ý tưởng.\n\n"
+        "• Bấm một dòng để chọn\n"
+        "• Double-click — chạy luôn pipeline\n"
+        "• «Tạo 5 chủ đề» — gợi ý lại (tránh trùng chủ đề cũ)\n\n"
+        "Pipeline: script → audio → SRT → file tạo ảnh (.txt).",
+    ),
+    "img_prompts": (
+        "File prompt",
+        "File .txt chứa từng dòng prompt ảnh (001_[00.00.00-00.00.01.92] ...).\n\n"
+        "Thường là output từ tab Tạo SRT hoặc Tự động.\n"
+        "«Lấy từ tab Dự án» — đồng bộ với «File tạo ảnh».",
+    ),
+    "img_output_dir": (
+        "Thư mục ảnh",
+        "Nơi lưu ảnh scene: 001_…jpg, 002_…jpg — khớp tab Dự án «Thư mục ảnh».\n\n"
+        "Sau khi tạo xong → tab Dự án → Render.",
+    ),
+    "img_gemini": (
+        "Gemini API key",
+        f"Key Google AI Studio ({GEMINI_API_KEY_ENV}) để gọi model tạo ảnh.\n\n"
+        "• Thêm vào .env hoặc nhập trực tiếp\n"
+        "• Lần đầu có thể tự cài google-genai\n"
+        "• Model: gemini-2.5-flash-image (+ fallback 3.1 / 3-pro)",
+    ),
+    "img_aspect": (
+        "Tỷ lệ ảnh",
+        "Khung hình gửi Gemini khi tạo ảnh.\n\n"
+        "• Tự động — Shorts → 9:16, còn lại → 16:9\n"
+        "• 16:9 — video ngang\n"
+        "• 9:16 — Shorts / TikTok\n"
+        "• 1:1 — vuông",
+    ),
+    "img_skip_existing": (
+        "Bỏ qua có sẵn",
+        "Khi bật: không tạo lại scene đã có file ảnh (001_…jpg).\n\n"
+        "Tắt để ghi đè — hữu ích khi chỉnh prompt và tạo lại một vài scene.",
+    ),
+    "img_status": (
+        "Gemini",
+        "Trạng thái sẵn sàng tạo ảnh.\n\n"
+        "Cấu hình API key ở tab API key.",
     ),
 }

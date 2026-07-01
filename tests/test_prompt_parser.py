@@ -5,8 +5,12 @@ from pathlib import Path
 import pytest
 
 from videobuilder.core.pipeline import (
+    find_missing_scene_images,
+    index_images_by_scene,
+    parse_image_scene_num,
     parse_prompt_scenes,
     parse_scene_bracket_time,
+    validate_scene_images,
 )
 
 
@@ -82,3 +86,32 @@ class TestParsePromptScenes:
         scenes = parse_prompt_scenes(path, 60.0)
         assert len(scenes) == 1
         assert scenes[0][0] == 2
+
+
+class TestParseImageSceneNum:
+    def test_standard_prefix(self, tmp_path: Path):
+        assert parse_image_scene_num(tmp_path / "001_scene.jpg") == 1
+        assert parse_image_scene_num(tmp_path / "029_hook.png") == 29
+
+    def test_trailing_bulk_export_number(self, tmp_path: Path):
+        assert parse_image_scene_num(tmp_path / "Bulk_img_gen_00_52_1-07-2026_1.png") == 1
+        assert parse_image_scene_num(tmp_path / "Bulk_img_gen_00_52_1-07-2026_6.png") == 6
+
+    def test_trailing_number_matches_timeline(self, tmp_path: Path):
+        prompts = tmp_path / "prompts.txt"
+        prompts.write_text(
+            "001_[00:00.00-00:06.00] Scene one\n\n"
+            "002_[00:06.00-00:12.00] Scene two\n",
+            encoding="utf-8",
+        )
+        scenes = parse_prompt_scenes(prompts, 60.0)
+        images_dir = tmp_path / "images"
+        images_dir.mkdir()
+        (images_dir / "Bulk_img_gen_00_52_1-07-2026_1.png").write_bytes(b"x")
+        (images_dir / "Bulk_img_gen_00_52_1-07-2026_2.png").write_bytes(b"x")
+
+        validate_scene_images(scenes, images_dir)
+        by_scene, _refs = index_images_by_scene(images_dir)
+        assert by_scene[1].name.endswith("_1.png")
+        assert by_scene[2].name.endswith("_2.png")
+        assert find_missing_scene_images(scenes, images_dir) == []

@@ -77,6 +77,60 @@ class WidgetMixin:
             style.configure("Ghost.TButton", padding=(8, 4), font=self._font(9))
             style.configure("Horizontal.TProgressbar", troughcolor=C["progress_trough"], background=C["progress_bar"], thickness=8)
 
+        def _pill_button(self, parent, text, command, *, kind="primary"):
+            palettes = {
+                "primary": ("#2563eb", "#ffffff", "#1d4ed8"),
+                "secondary": ("#eef2ff", "#1e40af", "#dbeafe"),
+                "ghost": ("#f8fafc", "#334155", "#e2e8f0"),
+            }
+            bg, fg, hover = palettes.get(kind, palettes["ghost"])
+            btn = tk.Label(
+                parent,
+                text=text,
+                bg=bg,
+                fg=fg,
+                font=self._font(9, "bold" if kind == "primary" else "normal"),
+                padx=12,
+                pady=5,
+                cursor="hand2",
+                anchor="center",
+            )
+            btn._pill_enabled = True
+            btn._pill_bg = bg
+            btn._pill_fg = fg
+            btn._pill_hover = hover
+            btn._pill_command = command
+
+            def invoke(_event=None):
+                if getattr(btn, "_pill_enabled", True):
+                    command()
+
+            def enter(_event=None):
+                if getattr(btn, "_pill_enabled", True):
+                    btn.configure(bg=hover)
+
+            def leave(_event=None):
+                if getattr(btn, "_pill_enabled", True):
+                    btn.configure(bg=bg)
+
+            btn.bind("<Button-1>", invoke)
+            btn.bind("<Enter>", enter)
+            btn.bind("<Leave>", leave)
+            return btn
+
+        def _section_panel(self, parent, title: str) -> tuple[tk.Frame, ttk.Frame]:
+            wrap = tk.Frame(
+                parent, bg=C["card"],
+                highlightbackground=C["border"], highlightthickness=1,
+            )
+            tk.Label(
+                wrap, text=title, bg=C["accent_soft"], fg=C["accent"],
+                font=self._font(9, "bold"), anchor="w", padx=8, pady=3,
+            ).pack(fill=tk.X)
+            body = ttk.Frame(wrap, style="Card.TFrame", padding=10)
+            body.pack(fill=tk.BOTH, expand=True)
+            return wrap, body
+
         def _native_checkbutton(self, parent, variable):
             """Checkbox hệ thống — dấu ✓, không dùng indicator X của ttk/clam."""
             return tk.Checkbutton(
@@ -365,6 +419,17 @@ class WidgetMixin:
             )
             icon.bind("<Button-1>", on_click)
             return icon
+
+        def _muted_label_with_help(self, parent, text, help_key=None):
+            frame = tk.Frame(parent, bg=C["card"])
+            ttk.Label(frame, text=text, style="Muted.TLabel").pack(side=tk.LEFT)
+            if help_key and help_key in FIELD_HELP:
+                title, message = FIELD_HELP[help_key]
+                info = self._make_info_icon(
+                    frame, lambda _e, t=title, m=message: self._show_info(t, m),
+                )
+                info.pack(side=tk.LEFT, padx=(4, 0))
+            return frame
 
         def _grid_field_label(self, parent, row, label, help_key=None, label_width=12, col=0, pady=4, padx=(0, 8)):
             frame = tk.Frame(parent, bg=C["card"])

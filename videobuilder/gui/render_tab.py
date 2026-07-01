@@ -44,37 +44,82 @@ from videobuilder.gui.constants import (
 )
 from videobuilder.gui.paths import is_writable_output_dir, normalize_output_path
 from videobuilder.gui.progress import should_log_render_progress
-from videobuilder.core.ffmpeg_setup import check_ffmpeg, ensure_ffmpeg_on_path, install_ffmpeg
+from videobuilder.core.ffmpeg_setup import (
+    check_ffmpeg,
+    ensure_ffmpeg_on_path,
+    ffmpeg_can_auto_install,
+    ffmpeg_install_hint,
+    install_ffmpeg,
+)
 
 
 class RenderTabMixin:
+        def _show_ffmpeg_banner(self, *, compact: bool = True) -> None:
+            if not self.ffmpeg_banner.winfo_ismapped():
+                self.ffmpeg_banner.pack(fill=tk.X, after=self.header, pady=(0, 1))
+            else:
+                self.ffmpeg_banner.pack_configure(pady=(0, 1))
+
+        def _hide_ffmpeg_banner(self) -> None:
+            if self.ffmpeg_banner.winfo_ismapped():
+                self.ffmpeg_banner.pack_forget()
+
+        def _sync_encoder_header(self) -> None:
+            from videobuilder.core.pipeline import detect_video_encoder
+
+            encoder, label = detect_video_encoder()
+            status = check_ffmpeg()
+            parts = [label, encoder]
+            if status.get("ok") and status.get("short"):
+                parts.append(f"ffmpeg {status['short']}")
+            self.encoder_info_var.set(" · ".join(parts))
+
         def _refresh_ffmpeg_status(self):
             ensure_ffmpeg_on_path()
             status = check_ffmpeg()
             self.ffmpeg_ok = status["ok"]
 
-            if not self.ffmpeg_banner.winfo_ismapped():
-                self.ffmpeg_banner.pack(fill=tk.X, after=self.header)
+            if status["ok"] and not self.ffmpeg_installing:
+                self.ffmpeg_status_var.set(status["message"])
+                self._hide_ffmpeg_banner()
+                self.ffmpeg_install_btn.pack_forget()
+                self.ffmpeg_recheck_btn.pack_forget()
+                self._sync_encoder_header()
+                self._sync_duration_from_audio()
+                self._set_rendering_locked()
+                return
+
+            self._show_ffmpeg_banner(compact=self.ffmpeg_installing)
 
             if status["ok"]:
                 self.ffmpeg_banner.configure(bg=C["ok_bg"])
                 self.ffmpeg_inner.configure(bg=C["ok_bg"])
-                self.ffmpeg_icon_label.configure(text="✓", bg=C["ok_bg"], fg=C["ok_fg"])
-                self.ffmpeg_msg_label.configure(bg=C["ok_bg"], fg=C["ok_fg"])
+                self.ffmpeg_icon_label.configure(
+                    text="✓", bg=C["ok_bg"], fg=C["ok_fg"], font=self._font(8, "bold"),
+                )
+                self.ffmpeg_msg_label.configure(
+                    bg=C["ok_bg"], fg=C["ok_fg"], font=self._font(8),
+                )
                 self.ffmpeg_status_var.set(status["message"])
                 self.ffmpeg_install_btn.pack_forget()
                 if not self.ffmpeg_installing:
-                    self.ffmpeg_recheck_btn.pack(side=tk.RIGHT)
+                    self.ffmpeg_recheck_btn.pack(side=tk.RIGHT, padx=(0, 2))
                 self._sync_duration_from_audio()
             else:
                 self.ffmpeg_banner.configure(bg=C["warn_bg"])
                 self.ffmpeg_inner.configure(bg=C["warn_bg"])
-                self.ffmpeg_icon_label.configure(text="!", bg=C["warn_bg"], fg=C["warn_fg"])
-                self.ffmpeg_msg_label.configure(bg=C["warn_bg"], fg=C["warn_fg"])
+                self.ffmpeg_icon_label.configure(
+                    text="!", bg=C["warn_bg"], fg=C["warn_fg"], font=self._font(8, "bold"),
+                )
+                self.ffmpeg_msg_label.configure(
+                    bg=C["warn_bg"], fg=C["warn_fg"], font=self._font(8),
+                )
                 self.ffmpeg_status_var.set(status["message"])
+                self.ffmpeg_install_btn.pack_forget()
                 self.ffmpeg_recheck_btn.pack_forget()
-                if not self.ffmpeg_installing:
-                    self.ffmpeg_install_btn.pack(side=tk.RIGHT)
+                self.ffmpeg_recheck_btn.pack(side=tk.RIGHT, padx=(0, 2))
+                if ffmpeg_can_auto_install() and not self.ffmpeg_installing:
+                    self.ffmpeg_install_btn.pack(side=tk.RIGHT, padx=(4, 0))
             self._set_rendering_locked()
 
         def _set_rendering_locked(self):
@@ -89,7 +134,7 @@ class RenderTabMixin:
             self._update_render_control_buttons()
 
         def _update_render_control_buttons(self):
-            active = self.rendering or self.srt_running
+            active = self.rendering or self.srt_running or getattr(self, "img_running", False)
             ctrl_state = tk.NORMAL if active else tk.DISABLED
             if active and self.srt_running and self.srt_paused:
                 pause_bg, pause_fg, pause_text = "#dcfce7", "#15803d", "Tiếp tục"
@@ -112,8 +157,13 @@ class RenderTabMixin:
         def _start_ffmpeg_install(self):
             if self.ffmpeg_installing or self.rendering:
                 return
+            if not ffmpeg_can_auto_install():
+                self._refresh_ffmpeg_status()
+                self._show_info("FFmpeg", ffmpeg_install_hint().capitalize() + ".")
+                return
 
             self.ffmpeg_installing = True
+            self._show_ffmpeg_banner(compact=True)
             self.ffmpeg_install_btn.configure(state=tk.DISABLED, text="Đang cài...")
             self.ffmpeg_status_var.set("Đang cài FFmpeg — vui lòng chờ...")
             self.status_var.set("Đang cài FFmpeg...")
@@ -160,16 +210,22 @@ class RenderTabMixin:
             if not self.process_controller:
                 return
             if self.srt_running:
+                if getattr(self, "img_running", False):
+                    action = "tạo ảnh"
+                elif getattr(self, "auto_running", False):
+                    action = "pipeline tự động"
+                else:
+                    action = "tạo SRT"
                 if self.srt_paused:
                     self.process_controller.resume()
                     self.srt_paused = False
-                    self._update_srt_status("Đang tiếp tục...")
-                    self._log("Tiếp tục tạo SRT.", "info")
+                    self._update_srt_status(f"Đang tiếp tục {action}...")
+                    self._log(f"Tiếp tục {action}.", "info")
                 else:
                     self.process_controller.pause()
                     self.srt_paused = True
                     self._update_srt_status("Tạm dừng")
-                    self._log("Tạm dừng tạo SRT.", "warn")
+                    self._log(f"Tạm dừng {action}.", "warn")
                 self._update_render_control_buttons()
                 return
             if not self.rendering:
@@ -187,8 +243,13 @@ class RenderTabMixin:
             self._update_render_control_buttons()
 
         def _cancel_render(self):
-            if (self.srt_running or getattr(self, "auto_running", False)) and self.process_controller:
-                label = "tự động" if getattr(self, "auto_running", False) else "SRT"
+            if (self.srt_running or getattr(self, "auto_running", False) or getattr(self, "img_running", False)) and self.process_controller:
+                if getattr(self, "img_running", False):
+                    label = "tạo ảnh"
+                elif getattr(self, "auto_running", False):
+                    label = "tự động"
+                else:
+                    label = "SRT"
                 self._log(f"Đang hủy {label}...", "warn")
                 self.srt_status_var.set("Đang hủy...")
                 self.process_controller.cancel()
@@ -299,11 +360,23 @@ class RenderTabMixin:
 
             try:
                 scenes = parse_prompt_scenes(Path(prompts), audio_duration)
+            except Exception as exc:
+                raise ValueError(f"Không đọc được file prompt:\n{exc}") from exc
+
+            try:
                 validate_scene_images(scenes, Path(images))
             except MissingSceneImagesError:
                 raise
             except Exception as exc:
-                raise ValueError(f"Không đọc được file prompt:\n{exc}") from exc
+                # Thư mục ảnh rỗng / sai đường dẫn thường bị hiểu nhầm là lỗi prompt
+                msg = str(exc).strip()
+                if msg.startswith("Không tìm thấy ảnh trong thư mục"):
+                    raise ValueError(
+                        f"{msg}\n\n"
+                        "Gợi ý: tab Tạo ảnh → tạo ảnh scene vào đúng thư mục, "
+                        "rồi tab Dự án → «Thư mục ảnh» trỏ vào thư mục đó."
+                    ) from exc
+                raise
 
             if not output:
                 raise ValueError("Chọn file xuất.")

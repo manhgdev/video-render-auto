@@ -63,14 +63,14 @@ class ShellMixin:
             )
 
         def _apply_footer_mode(self, mode: str):
-            """Chuyển footer giữa render (Dự án/Cài đặt) và SRT."""
-            is_srt = mode in ("srt", "auto")
+            """Chuyển footer giữa render (Dự án/Cài đặt) và SRT / Tạo ảnh."""
+            is_srt = mode in ("srt", "auto", "image")
             self._footer_mode = mode
 
             if not self._log_block.winfo_ismapped():
                 self._log_block.pack(fill=tk.X)
             if getattr(self, "log_text", None) is not None:
-                self.log_text.configure(height=1 if mode == "auto" else 5)
+                self.log_text.configure(height=5 if is_srt else 4)
 
             if is_srt:
                 self._render_bar.wrap.pack_forget()
@@ -88,6 +88,7 @@ class ShellMixin:
 
             self.render_btn.pack_forget()
             self.srt_create_btn.pack_forget()
+            self.img_create_btn.pack_forget()
             self.preview_btn.pack_forget()
             self.pause_btn.pack_forget()
             self.cancel_btn.pack_forget()
@@ -97,12 +98,14 @@ class ShellMixin:
 
             if mode == "srt":
                 self.srt_create_btn.pack(side=tk.LEFT)
+            elif mode == "image":
+                self.img_create_btn.pack(side=tk.LEFT)
             elif mode == "auto":
                 self._update_srt_open_buttons()
             else:
                 self.render_btn.pack(side=tk.LEFT)
 
-            if mode != "auto":
+            if mode != "auto" and mode != "image":
                 self.preview_btn.pack(side=tk.LEFT, padx=(8, 0))
             self.pause_btn.pack(side=tk.LEFT, padx=(8, 0))
             self.cancel_btn.pack(side=tk.LEFT, padx=(4, 0))
@@ -110,9 +113,15 @@ class ShellMixin:
 
             if is_srt:
                 self.open_prompts_btn.pack(side=tk.LEFT, padx=(4, 0))
-                self.open_video_btn.configure(text="Mở srt", command=self._open_srt)
-                self._update_srt_open_buttons()
-                self._update_srt_controls_locked()
+                if mode == "image":
+                    self.open_video_btn.configure(text="Thư mục ảnh", command=self._open_images_folder)
+                    self._update_img_open_buttons()
+                    self._update_img_controls_locked()
+                else:
+                    self.open_video_btn.configure(text="Mở srt", command=self._open_srt)
+                    self._update_srt_open_buttons()
+                    if mode == "srt":
+                        self._update_srt_controls_locked()
             else:
                 self.open_video_btn.configure(text="Mở video", command=self._open_video)
                 enabled = bool(self.last_output and Path(self.last_output).is_file())
@@ -132,10 +141,16 @@ class ShellMixin:
                 panel.pack_forget()
             self._tab_panels[key].pack(fill=tk.BOTH, expand=True)
             self._render_footer.pack(side=tk.BOTTOM, fill=tk.X)
-            if key in ("srt", "auto"):
+            if key in ("srt", "auto", "image"):
                 self._apply_footer_mode(key)
-                self._refresh_whisper_status()
-                self._ensure_srt_packages_auto()
+                if key == "srt":
+                    self._refresh_whisper_status()
+                    self._ensure_srt_packages_auto()
+                elif key == "image":
+                    self._refresh_img_engine_status()
+                    self._ensure_img_packages_auto()
+                elif key == "api":
+                    self._refresh_api_tab_status()
             else:
                 self._apply_footer_mode("render")
             track = C["tab_track"]
@@ -241,8 +256,8 @@ class ShellMixin:
                 self.header, textvariable=self.encoder_info_var, style="HeaderSub.TLabel",
             ).pack(side=tk.RIGHT)
 
-            self.ffmpeg_banner = tk.Frame(self, bg=C["warn_bg"], padx=18, pady=8)
-            self.ffmpeg_banner.pack(fill=tk.X, after=self.header)
+            self.ffmpeg_banner = tk.Frame(self, bg=C["warn_bg"], padx=8, pady=2)
+            # Chỉ hiện khi thiếu FFmpeg hoặc đang cài — _refresh_ffmpeg_status() quyết định
 
             ffmpeg_inner = tk.Frame(self.ffmpeg_banner, bg=C["warn_bg"])
             ffmpeg_inner.pack(fill=tk.X)
@@ -251,44 +266,45 @@ class ShellMixin:
             self.ffmpeg_icon_label = tk.Label(
                 ffmpeg_inner,
                 text="!",
-                font=self._font(11, "bold"),
+                font=self._font(8, "bold"),
                 bg=C["warn_bg"],
                 fg=C["warn_fg"],
-                width=2,
+                width=1,
             )
             self.ffmpeg_icon_label.pack(side=tk.LEFT)
 
             self.ffmpeg_msg_label = tk.Label(
                 ffmpeg_inner,
                 textvariable=self.ffmpeg_status_var,
-                font=self._font(11, "bold"),
+                font=self._font(8),
                 bg=C["warn_bg"],
                 fg=C["warn_fg"],
                 anchor="w",
             )
-            self.ffmpeg_msg_label.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(4, 12))
+            self.ffmpeg_msg_label.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(2, 6))
 
             self.ffmpeg_install_btn = tk.Button(
                 ffmpeg_inner,
                 text="Cài FFmpeg",
-                font=self._font(8, "bold"),
+                font=self._font(7, "bold"),
                 bg="#dbeafe",
                 fg="#1e3a8a",
                 activebackground="#bfdbfe",
                 activeforeground="#1e3a8a",
                 relief=tk.FLAT,
                 cursor="hand2",
-                padx=8,
-                pady=2,
+                padx=6,
+                pady=0,
                 command=self._start_ffmpeg_install,
             )
-            self.ffmpeg_install_btn.pack(side=tk.RIGHT)
+            self.ffmpeg_install_btn.pack_forget()
 
             self.ffmpeg_recheck_btn = ttk.Button(
                 ffmpeg_inner,
-                text="Kiểm tra lại",
+                text="Kiểm tra",
                 command=self._refresh_ffmpeg_status,
-                style="Ghost.TButton",
+                style="Small.TButton",
+                width=8,
             )
 
             content = tk.Frame(self, bg=C["card"])
@@ -362,6 +378,9 @@ class ShellMixin:
                 row_btns, text="Mở tạo ảnh", command=self._open_prompts, state=tk.DISABLED,
             )
             self.srt_create_btn = self._make_action_button(row_btns, "Tạo SRT", self._start_create_srt, kind="primary")
+            self.img_create_btn = self._make_action_button(
+                row_btns, "Tạo ảnh", self._start_generate_images, kind="primary",
+            )
             self._footer_status_label = tk.Label(
                 row_btns, textvariable=self.status_var, font=self._font(10),
                 bg=C["footer"], fg=C["muted"], width=24, anchor=tk.E,
@@ -374,18 +393,30 @@ class ShellMixin:
             tab_opts_shell = shells["opts"]
             tab_auto_shell = shells["auto"]
             tab_srt_shell = shells["srt"]
+            tab_image_shell = shells["image"]
+            tab_api_shell = shells["api"]
             tab_contact_shell = shells["contact"]
 
             tab_files = self._build_scroll_area(tab_files_shell)
             tab_opts = self._build_scroll_area(tab_opts_shell)
-            tab_auto = self._build_scroll_area(tab_auto_shell)
+            tab_auto_scroll = self._build_scroll_area(tab_auto_shell)
+            tab_auto = ttk.Frame(tab_auto_scroll, style="Card.TFrame", padding=(14, 10))
+            tab_auto.pack(fill=tk.BOTH, expand=True, anchor="nw")
             tab_srt = self._build_scroll_area(tab_srt_shell)
+            tab_image_scroll = self._build_scroll_area(tab_image_shell)
+            tab_image = ttk.Frame(tab_image_scroll, style="Card.TFrame", padding=(14, 10))
+            tab_image.pack(fill=tk.BOTH, expand=True, anchor="nw")
+            tab_api_scroll = self._build_scroll_area(tab_api_shell)
+            tab_api = ttk.Frame(tab_api_scroll, style="Card.TFrame", padding=(14, 10))
+            tab_api.pack(fill=tk.BOTH, expand=True, anchor="nw")
             tab_contact_scroll = self._build_scroll_area(tab_contact_shell)
             tab_contact = ttk.Frame(tab_contact_scroll, style="Card.TFrame", padding=18)
             tab_contact.pack(fill=tk.BOTH, expand=True, anchor="nw")
             self._build_contact_tab(tab_contact)
             self._build_auto_tab(tab_auto)
             self._build_srt_tab(tab_srt)
+            self._build_image_tab(tab_image)
+            self._build_api_tab(tab_api)
             self._sync_srt_model_hint()
             self._refresh_whisper_status()
 

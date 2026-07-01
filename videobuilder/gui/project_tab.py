@@ -46,59 +46,43 @@ class ProjectTabMixin:
             parent.columnconfigure(0, weight=1)
 
             tk.Label(
-                parent, text="Liên hệ & hỗ trợ", font=self._font(14, "bold"),
+                parent, text="Liên hệ & hỗ trợ", font=self._font(12, "bold"),
                 bg=C["card"], fg=C["text"],
-            ).grid(row=0, column=0, sticky="w", pady=(0, 4))
+            ).grid(row=0, column=0, sticky="w", pady=(0, 2))
 
             tk.Label(
                 parent,
                 text="Gặp lỗi, cần tính năng mới hoặc hỗ trợ sử dụng — nhắn Telegram.",
-                font=self._font(10), bg=C["card"], fg=C["muted"], wraplength=520, justify=tk.LEFT,
-            ).grid(row=1, column=0, sticky="w", pady=(0, 20))
+                font=self._font(9), bg=C["card"], fg=C["muted"], wraplength=560, justify=tk.LEFT,
+            ).grid(row=1, column=0, sticky="w", pady=(0, 10))
 
-            card = tk.Frame(
-                parent, bg=C["accent_soft"],
-                highlightbackground=C["border"], highlightthickness=1,
-            )
-            card.grid(row=2, column=0, sticky="ew", pady=(0, 12))
-            card.columnconfigure(1, weight=1)
-
-            tk.Label(
-                card, text="Telegram", font=self._font(10, "bold"),
-                bg=C["accent_soft"], fg=C["text"],
-            ).grid(row=0, column=0, sticky="w", padx=16, pady=(14, 4))
+            card, body = self._section_panel(parent, "Telegram")
+            card.grid(row=2, column=0, sticky="ew")
+            body.columnconfigure(0, weight=1)
 
             link = tk.Label(
-                card, text=TELEGRAM_HANDLE, font=self._font(11, "bold"),
-                bg=C["accent_soft"], fg=C["accent"], cursor="hand2",
+                body, text=TELEGRAM_HANDLE, font=self._font(11, "bold"),
+                bg=C["card"], fg=C["accent"], cursor="hand2", anchor="w",
             )
-            link.grid(row=1, column=0, columnspan=2, sticky="w", padx=16, pady=(0, 12))
+            link.grid(row=0, column=0, sticky="w", pady=(0, 8))
             link.bind("<Button-1>", lambda _e: self._open_telegram())
             link.bind("<Enter>", lambda _e: link.configure(fg=C["accent_hover"]))
             link.bind("<Leave>", lambda _e: link.configure(fg=C["accent"]))
 
-            btn_row = tk.Frame(card, bg=C["accent_soft"])
-            btn_row.grid(row=2, column=0, columnspan=2, sticky="w", padx=12, pady=(0, 14))
-
-            tk.Button(
-                btn_row, text="Mở Telegram", font=self._font(10, "bold"),
-                bg="#dbeafe", fg="#1e3a8a", activebackground="#bfdbfe",
-                relief=tk.FLAT, cursor="hand2", padx=14, pady=5,
-                command=self._open_telegram,
-            ).pack(side=tk.LEFT, padx=(4, 8))
-
-            tk.Button(
-                btn_row, text="Sao chép", font=self._font(10),
-                bg="#ffffff", fg=C["text"], activebackground="#f3f4f6",
-                relief=tk.FLAT, cursor="hand2", padx=12, pady=5,
-                command=self._copy_telegram,
+            btn_row = ttk.Frame(body, style="Card.TFrame")
+            btn_row.grid(row=1, column=0, sticky="w")
+            self._pill_button(
+                btn_row, "Mở Telegram", self._open_telegram, kind="primary",
+            ).pack(side=tk.LEFT, padx=(0, 8))
+            self._pill_button(
+                btn_row, "Sao chép", self._copy_telegram, kind="secondary",
             ).pack(side=tk.LEFT)
 
             tk.Label(
                 parent,
                 text="© 2026 manhgdev · VideoBuilder",
                 font=self._font(9), bg=C["card"], fg=C["muted"],
-            ).grid(row=3, column=0, sticky="w", pady=(16, 0))
+            ).grid(row=3, column=0, sticky="w", pady=(14, 0))
 
         def _build_log_panel(self, parent):
             wrap = tk.Frame(parent, bg=C["log_bg"], highlightbackground=C["border"], highlightthickness=1)
@@ -112,7 +96,7 @@ class ProjectTabMixin:
             ttk.Button(top, text="Copy", command=self._copy_log, style="Small.TButton", width=5).pack(side=tk.RIGHT)
 
             self.log_text = tk.Text(
-                wrap, wrap=tk.WORD, font=("Menlo" if sys.platform == "darwin" else "Consolas", 9), height=3,
+                wrap, wrap=tk.WORD, font=("Menlo" if sys.platform == "darwin" else "Consolas", 9), height=4,
                 bg=C["log_bg"], fg=C["log_fg"], insertbackground=C["log_fg"],
                 relief=tk.FLAT, padx=10, pady=5, state=tk.DISABLED,
             )
@@ -393,10 +377,20 @@ class ProjectTabMixin:
 
         def _open_folder(self):
             mode = getattr(self, "_footer_mode", "render")
-            if mode in ("srt", "auto"):
+            if mode in ("srt", "auto", "image"):
+                if mode == "image":
+                    img_dir = self.img_output_dir_var.get().strip() or self.images_var.get().strip()
+                    if img_dir and Path(img_dir).exists():
+                        self._open_folder_path(img_dir)
+                        return
                 target = self.last_srt_output or self.subtitle_var.get().strip() or self.srt_output_var.get().strip()
                 if not target:
-                    target = self.last_prompts_output or self.prompts_var.get().strip() or self.srt_prompts_output_var.get().strip()
+                    target = (
+                        self.last_prompts_output
+                        or self.prompts_var.get().strip()
+                        or self.srt_prompts_output_var.get().strip()
+                        or self.img_prompts_var.get().strip()
+                    )
                 if not target and mode == "auto":
                     auto_dir = self.auto_output_dir_var.get().strip()
                     if auto_dir and Path(auto_dir).is_dir():
@@ -433,8 +427,8 @@ class ProjectTabMixin:
                 "subtitle_margin": self.subtitle_margin_var.get(),
                 "subtitle_outline": self.subtitle_outline_var.get(),
                 "preview": self.preview_var.get(),
-                "srt_groq_api_key": self.srt_groq_api_key_var.get(),
-                "srt_gemini_api_key": self.srt_gemini_api_key_var.get(),
+                "groq_api_key": self.groq_api_key_var.get(),
+                "gemini_api_key": self.gemini_api_key_var.get(),
                 "srt_prompts_output": self.srt_prompts_output_var.get(),
                 "srt_gen_prompts": self.srt_gen_prompts_var.get(),
                 "srt_audio": self.srt_audio_var.get(),
@@ -450,6 +444,10 @@ class ProjectTabMixin:
                 "auto_voice": self.auto_voice_var.get(),
                 "auto_rate": self.auto_rate_var.get(),
                 "auto_topic_history": getattr(self, "auto_topic_history", []),
+                "img_prompts": self.img_prompts_var.get(),
+                "img_output_dir": self.img_output_dir_var.get(),
+                "img_aspect": self.img_aspect_var.get(),
+                "img_skip_existing": self.img_skip_existing_var.get(),
             }
 
         def _load_settings(self):
@@ -483,8 +481,8 @@ class ProjectTabMixin:
                 "subtitle_margin": self.subtitle_margin_var,
                 "subtitle_outline": self.subtitle_outline_var,
                 "preview": self.preview_var,
-                "srt_groq_api_key": self.srt_groq_api_key_var,
-                "srt_gemini_api_key": self.srt_gemini_api_key_var,
+                "groq_api_key": self.groq_api_key_var,
+                "gemini_api_key": self.gemini_api_key_var,
                 "srt_prompts_output": self.srt_prompts_output_var,
                 "srt_gen_prompts": self.srt_gen_prompts_var,
                 "srt_audio": self.srt_audio_var,
@@ -499,6 +497,9 @@ class ProjectTabMixin:
                 "auto_script": self.auto_script_var,
                 "auto_voice": self.auto_voice_var,
                 "auto_rate": self.auto_rate_var,
+                "img_prompts": self.img_prompts_var,
+                "img_output_dir": self.img_output_dir_var,
+                "img_aspect": self.img_aspect_var,
             }
             for key, var in mapping.items():
                 if key not in data:
@@ -514,8 +515,20 @@ class ProjectTabMixin:
                     var.set(SRT_SPLIT_KEY_TO_LABEL.get(split_key, SRT_SPLIT_KEY_TO_LABEL["normal"]))
                 elif key == "srt_gen_prompts":
                     self.srt_gen_prompts_var.set(bool(data[key]))
+                elif key == "img_skip_existing":
+                    self.img_skip_existing_var.set(bool(data[key]))
                 else:
                     var.set(data[key])
+            if not self.groq_api_key_var.get().strip():
+                legacy = data.get("srt_groq_api_key", "")
+                if legacy:
+                    self.groq_api_key_var.set(str(legacy))
+            if not self.gemini_api_key_var.get().strip():
+                for legacy_key in ("img_gemini_api_key", "srt_gemini_api_key", "gemini_api_key"):
+                    legacy = data.get(legacy_key, "")
+                    if legacy:
+                        self.gemini_api_key_var.set(str(legacy))
+                        break
             self._sync_output_display(from_output_var=True)
             self._sync_prompts_display(from_output_var=True)
             self._sync_srt_output_display(from_output_var=True)
@@ -526,6 +539,14 @@ class ProjectTabMixin:
             if self.auto_seed_var.get().strip().lower() == "start":
                 self.auto_seed_var.set("")
             self._apply_groq_api_key(silent=True)
+            from videobuilder.core.generate_images import apply_env_gemini_key, set_gemini_api_key
+
+            set_gemini_api_key(self.gemini_api_key_var.get())
+            apply_env_gemini_key()
+            if not self.img_prompts_var.get().strip() and self.prompts_var.get().strip():
+                self.img_prompts_var.set(self.prompts_var.get())
+            if not self.img_output_dir_var.get().strip() and self.images_var.get().strip():
+                self.img_output_dir_var.set(self.images_var.get())
 
         def _save_settings(self):
             try:
@@ -537,7 +558,9 @@ class ProjectTabMixin:
                 pass
 
         def _on_close(self):
-            if self.process_controller and (self.rendering or self.srt_running or self.auto_running):
+            if self.process_controller and (
+                self.rendering or self.srt_running or self.auto_running or self.img_running
+            ):
                 self.process_controller.cancel()
             self._save_settings()
             self.destroy()

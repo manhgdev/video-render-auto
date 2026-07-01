@@ -20,6 +20,7 @@ from videobuilder.core.env_config import GROQ_API_KEY_ENV
 from videobuilder.core.ffmpeg_setup import get_app_dir
 from videobuilder.core.generate_prompts import GeneratePromptsError
 from videobuilder.core.groq_models import groq_llm_model_chain, load_cached_groq_models
+from videobuilder.core.progress import report_progress
 
 DEFAULT_AUTOMATION_PROMPT = get_app_dir() / "template" / "v1-base-vietnam-2D.txt"
 FALLBACK_AUTOMATION_PROMPT = get_app_dir() / "public" / "templates" / "automation_prompt_template.txt"
@@ -219,16 +220,31 @@ def _parse_json_object(text: str) -> dict[str, Any]:
     return data
 
 
-def _groq_json(system: str, user: str, *, max_tokens: int = 4096, log_callback=None) -> dict[str, Any]:
+def _auto_report(progress_callback, pct: float, message: str) -> None:
+    report_progress(progress_callback, pct, message)
+
+
+def _scaled_progress(progress_callback, base: float, span: float):
+    def report(pct: float, message: str) -> None:
+        _auto_report(progress_callback, base + float(pct) * span / 100.0, message)
+
+    return report
+
+
+def _groq_json(system: str, user: str, *, max_tokens: int = 4096, log_callback=None, progress_callback=None) -> dict[str, Any]:
     key = _ensure_groq_llm_ready()
     from groq import Groq
 
     client = Groq(api_key=key)
     last_err: BaseException | None = None
-    for model in groq_llm_model_chain():
+    models = list(groq_llm_model_chain())
+    for idx, model in enumerate(models):
         try:
             if log_callback:
                 log_callback(f"Groq LLM {model}...", "info")
+            if progress_callback and models:
+                pct = 20 + (55 * idx / max(1, len(models)))
+                _auto_report(progress_callback, pct, f"Groq LLM {model}...")
             response = client.chat.completions.create(
                 model=model,
                 messages=[
@@ -268,7 +284,9 @@ def suggest_topics(
     exclude_topics: list[str] | tuple[str, ...] | None = None,
     output_dir: str | Path | None = None,
     log_callback=None,
+    progress_callback=None,
 ) -> list[str]:
+    _auto_report(progress_callback, 3, "Groq đề xuất chủ đề...")
     prompt = read_optional_text_auto(production_prompt_path)
     excluded = filter_unique_topics([
         *(exclude_topics or []),
@@ -290,6 +308,7 @@ def suggest_topics(
         ),
         max_tokens=1800,
         log_callback=log_callback,
+        progress_callback=progress_callback,
     )
     topics = filter_unique_topics(
         [str(x).strip() for x in data.get("topics", []) if str(x).strip()],
@@ -297,6 +316,7 @@ def suggest_topics(
     )
     if len(topics) < count:
         raise AutomationError("Groq trả thiếu chủ đề mới không trùng. Bấm Tạo 5 chủ đề lại.")
+    _auto_report(progress_callback, 100, "Hoàn thành!")
     return topics[:count]
 
 
@@ -307,7 +327,9 @@ def create_script_file(
     *,
     minutes: str = "7-12",
     log_callback=None,
+    progress_callback=None,
 ) -> Path:
+    _auto_report(progress_callback, 8, "Groq viết script audio...")
     prompt = read_optional_text_auto(production_prompt_path)
     folder = project_folder_for_topic(topic, output_dir)
     folder.mkdir(parents=True, exist_ok=True)
@@ -322,6 +344,7 @@ def create_script_file(
         ),
         max_tokens=8192,
         log_callback=log_callback,
+        progress_callback=progress_callback,
     )
     script = str(data.get("script") or "").strip()
     if len(script) < 500:
@@ -329,6 +352,7 @@ def create_script_file(
     script_path.write_text(script + "\n", encoding="utf-8")
     if log_callback:
         log_callback(f"Đã tạo script: {script_path.name}", "success")
+    _auto_report(progress_callback, 35, "Script xong")
     return script_path
 
 
@@ -363,7 +387,9 @@ def synthesize_audio_edge_tts(
     voice: str = DEFAULT_TTS_VOICE,
     rate: str = DEFAULT_TTS_RATE,
     log_callback=None,
+    progress_callback=None,
 ) -> Path:
+    _auto_report(progress_callback, 38, "TTS edge-tts...")
     script = Path(script_path)
     if not script.is_file():
         raise FileNotFoundError(f"Không tìm thấy script: {script}")
@@ -385,6 +411,7 @@ def synthesize_audio_edge_tts(
     asyncio.run(run())
     if log_callback:
         log_callback(f"Đã tạo audio: {out.name}", "success")
+    _auto_report(progress_callback, 48, "Audio xong")
     return out
 
 
@@ -401,11 +428,13 @@ def run_full_auto_pipeline(
     log_callback=None,
     process_controller=None,
 ) -> AutoProductionResult:
+    _auto_report(progress_callback, 2, "Bắt đầu pipeline tự động...")
     script = create_script_file(
         production_prompt_path,
         topic,
         output_dir,
         log_callback=log_callback,
+        progress_callback=_scaled_progress(progress_callback, 2, 33),
     )
     audio = synthesize_audio_edge_tts(
         script,
@@ -413,6 +442,7 @@ def run_full_auto_pipeline(
         voice=voice,
         rate=rate,
         log_callback=log_callback,
+        progress_callback=_scaled_progress(progress_callback, 35, 15),
     )
     srt = script.with_name("subtitle.srt")
     prompts = script.with_name(f"image_prompts_{slugify_topic(topic)}.txt")
@@ -424,12 +454,13 @@ def run_full_auto_pipeline(
             language=language,
             split_mode=split_mode,
             generate_prompts=True,
-            progress_callback=progress_callback,
+            progress_callback=_scaled_progress(progress_callback, 50, 50),
             log_callback=log_callback,
             process_controller=process_controller,
         )
     except GeneratePromptsError as err:
         raise AutomationError(str(err)) from err
+    _auto_report(progress_callback, 100, "Hoàn thành!")
     return AutoProductionResult(
         topic=topic,
         folder=script.parent,

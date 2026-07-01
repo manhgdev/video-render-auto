@@ -22,7 +22,7 @@ from videobuilder.core.create_srt import (
     transcribe_groq_strict,
     write_srt_from_cues,
 )
-from videobuilder.core.env_config import GROQ_API_KEY_ENV, load_env
+from videobuilder.core.env_config import GROQ_API_KEY_ENV, GEMINI_API_KEY_ENV, env_api_key, load_env
 from videobuilder.core.generate_prompts import (
     GeneratePromptsError,
     default_prompts_path,
@@ -44,11 +44,16 @@ def _log(callback, message: str, level: str = "info") -> None:
 def apply_env_api_keys() -> None:
     load_env()
     if groq_api_key() is None:
-        from videobuilder.core.env_config import env_api_key
-
         g = env_api_key(GROQ_API_KEY_ENV)
         if g:
             set_groq_api_key(g)
+    from videobuilder.core.generate_images import apply_env_gemini_key, gemini_api_key, set_gemini_api_key
+
+    if gemini_api_key() is None:
+        g = env_api_key(GEMINI_API_KEY_ENV)
+        if g:
+            set_gemini_api_key(g)
+    apply_env_gemini_key()
 
 
 def run_audio_pipeline(

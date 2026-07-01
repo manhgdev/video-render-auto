@@ -328,9 +328,15 @@ ENCODER_OVERRIDE_OPTIONS = {
     "h264_nvenc": "NVIDIA GPU",
     "h264_qsv": "Intel GPU",
     "h264_amf": "AMD GPU",
+    "h264_vaapi": "Linux GPU",
     "h264_mf": "Windows GPU",
+    "h264_videotoolbox": "Apple GPU",
     "libx264": "CPU (libx264)",
 }
+
+VAAPI_ENCODER = "h264_vaapi"
+_VAAPI_DEVICE_CACHE: str | None = None
+_VAAPI_DEVICE_CHECKED = False
 
 DEFAULT_AUDIO_VOLUME = 1.0
 DEFAULT_WATERMARK_OPACITY = 0.7
@@ -741,6 +747,50 @@ def build_boundary_transitions(boundary_count, effect, seed=None):
     return [effect] * boundary_count
 
 
+def is_vaapi_encoder(encoder: str) -> bool:
+    return encoder == VAAPI_ENCODER
+
+
+def detect_vaapi_device() -> str | None:
+    global _VAAPI_DEVICE_CACHE, _VAAPI_DEVICE_CHECKED
+    if _VAAPI_DEVICE_CHECKED:
+        return _VAAPI_DEVICE_CACHE or None
+    _VAAPI_DEVICE_CHECKED = True
+    dri = Path("/dev/dri")
+    if dri.is_dir():
+        for dev in sorted(dri.glob("renderD*")):
+            _VAAPI_DEVICE_CACHE = str(dev)
+            return _VAAPI_DEVICE_CACHE
+    _VAAPI_DEVICE_CACHE = ""
+    return None
+
+
+def ffmpeg_vaapi_input_args(encoder: str) -> list[str]:
+    if not is_vaapi_encoder(encoder):
+        return []
+    device = detect_vaapi_device()
+    if not device:
+        raise RuntimeError(
+            "Encoder VAAPI cần GPU Linux (/dev/dri/renderD*) — chưa tìm thấy thiết bị. "
+            "Cài driver GPU (mesa/intel/amd) và thêm user vào group render/video."
+        )
+    return ["-vaapi_device", device]
+
+
+def vaapi_upload_filter() -> str:
+    return "format=nv12,hwupload"
+
+
+def append_vaapi_upload(vf: str) -> str:
+    upload = vaapi_upload_filter()
+    return f"{vf},{upload}" if vf else upload
+
+
+def append_vaapi_filter_complex(filter_complex: str, src_label: str = "[vout]") -> tuple[str, str]:
+    dst_label = "[vvaapi]"
+    return f"{filter_complex};{src_label}{vaapi_upload_filter()}{dst_label}", dst_label
+
+
 def detect_video_encoder():
     global _ENCODER_CACHE
     if _ENCODER_CACHE:
@@ -760,11 +810,16 @@ def detect_video_encoder():
         ("h264_nvenc", "NVIDIA GPU"),
         ("h264_qsv", "Intel GPU"),
         ("h264_amf", "AMD GPU"),
+        ("h264_vaapi", "Linux GPU"),
         ("h264_mf", "Windows GPU"),
+        ("h264_videotoolbox", "Apple GPU"),
     ]:
-        if encoder in out:
-            _ENCODER_CACHE = (encoder, label)
-            return _ENCODER_CACHE
+        if encoder not in out:
+            continue
+        if encoder == VAAPI_ENCODER and not detect_vaapi_device():
+            continue
+        _ENCODER_CACHE = (encoder, label)
+        return _ENCODER_CACHE
 
     _ENCODER_CACHE = ("libx264", "CPU")
     return _ENCODER_CACHE
@@ -785,9 +840,18 @@ def encoder_args(encoder, quality="fast"):
     if encoder == "h264_amf":
         qp = "20" if quality == "quality" else "21" if quality == "balanced" else "22"
         return ["-c:v", "h264_amf", "-quality", "speed", "-rc", "cqp", "-qp_i", qp, "-qp_p", qp]
+    if encoder == "h264_vaapi":
+        qp = "18" if quality == "quality" else "20" if quality == "balanced" else "23"
+        return ["-c:v", "h264_vaapi", "-qp", qp]
     if encoder == "h264_mf":
         q = "85" if quality == "quality" else "82" if quality == "balanced" else "80"
         return ["-c:v", "h264_mf", "-rate_control", "quality", "-quality", q]
+    if encoder == "h264_videotoolbox":
+        bitrate = "12M" if quality == "quality" else "8M" if quality == "balanced" else "5M"
+        args = ["-c:v", "h264_videotoolbox", "-profile:v", "high", "-b:v", bitrate]
+        if quality == "fast":
+            args += ["-prio_speed", "1"]
+        return args
     if quality == "quality":
         return ["-c:v", "libx264", "-preset", "medium", "-crf", "18"]
     if quality == "balanced":
@@ -836,9 +900,14 @@ def apply_playback_speed(
     )
 
     temp = path.with_name(f"{path.stem}._speed_tmp{path.suffix}")
+    vf = f"setpts=PTS/{speed_factor:.6f}"
+    if is_vaapi_encoder(encoder):
+        vf = append_vaapi_upload(vf)
     cmd = [
-        "ffmpeg", "-y", "-i", str(path),
-        "-vf", f"setpts=PTS/{speed_factor:.6f}",
+        "ffmpeg", "-y",
+        *ffmpeg_vaapi_input_args(encoder),
+        "-i", str(path),
+        "-vf", vf,
         "-af", build_atempo_chain(speed_factor),
         *encoder_args(encoder, encode_quality),
         "-c:a", "aac", "-b:a", "192k",
@@ -900,9 +969,12 @@ def _encode_zoom_scene_clip(
     vf = ken_burns_vf(width, height, fps, zoom_level, duration_sec)
     if not vf:
         raise ValueError("zoom_level phải bật")
+    if is_vaapi_encoder(encoder):
+        vf = append_vaapi_upload(vf)
     d = max(2, int(round(max(0.1, duration_sec) * fps)))
     cmd = [
         "ffmpeg", "-y",
+        *ffmpeg_vaapi_input_args(encoder),
         "-loop", "1", "-i", str(Path(image).resolve()),
         "-vf", vf,
         "-an", "-frames:v", str(d),
@@ -1037,7 +1109,7 @@ def _run_xfade_pass(
             f"[{i}:v]fps={fps},setsar=1,format=yuv420p[v{i}]"
             for i in range(n)
         ]
-        cmd = ["ffmpeg", "-y"]
+        cmd = ["ffmpeg", "-y", *ffmpeg_vaapi_input_args(encoder)]
         for clip in clip_paths:
             cmd += ["-i", str(clip)]
     else:
@@ -1045,7 +1117,7 @@ def _run_xfade_pass(
             scale_filter_chain(i, width, height, fps, zoom_level, durations[i])
             for i in range(n)
         ]
-        cmd = ["ffmpeg", "-y"]
+        cmd = ["ffmpeg", "-y", *ffmpeg_vaapi_input_args(encoder)]
         _append_scene_inputs(cmd, pairs, durations, fps, zoom_level)
 
     xfade_parts = []
@@ -1060,12 +1132,17 @@ def _run_xfade_pass(
         )
         prev = out
 
+    filter_text = ";\n".join(scale_parts + xfade_parts)
+    map_label = "[vout]"
+    if is_vaapi_encoder(encoder):
+        filter_text += f";\n[vout]{vaapi_upload_filter()}[vvaapi]"
+        map_label = "[vvaapi]"
     filter_path = workdir / f"xfade_{output_path.stem}.txt"
-    filter_path.write_text(";\n".join(scale_parts + xfade_parts), encoding="utf-8")
+    filter_path.write_text(filter_text, encoding="utf-8")
 
     cmd += [
         "-filter_complex_script", str(filter_path),
-        "-map", "[vout]",
+        "-map", map_label,
         "-r", str(fps),
         *encoder_args(encoder, encode_quality),
         str(output_path),
@@ -1135,7 +1212,7 @@ def mux_audio_video(
     watermark_path = Path(watermark) if watermark else None
     needs_reencode = bool(subtitle_path or watermark_path)
 
-    cmd = ["ffmpeg", "-y", "-i", str(video_path), "-i", str(audio_path)]
+    cmd = ["ffmpeg", "-y", *ffmpeg_vaapi_input_args(encoder), "-i", str(video_path), "-i", str(audio_path)]
     wm_idx = None
     if watermark_path:
         cmd += ["-i", str(watermark_path)]
@@ -1149,8 +1226,13 @@ def mux_audio_video(
             log_callback=log_callback,
         )
         if filter_complex:
-            cmd += ["-filter_complex", filter_complex, "-map", "[vout]"]
+            map_label = "[vout]"
+            if is_vaapi_encoder(encoder):
+                filter_complex, map_label = append_vaapi_filter_complex(filter_complex)
+            cmd += ["-filter_complex", filter_complex, "-map", map_label]
         else:
+            if is_vaapi_encoder(encoder):
+                vf_chain = append_vaapi_upload(vf_chain)
             cmd += ["-vf", vf_chain, "-map", "0:v"]
     else:
         cmd += ["-map", "0:v"]
@@ -1507,9 +1589,9 @@ def format_missing_images_message(missing: list[int], scenes, images_dir: Path) 
         else:
             tr = ""
         if num == 1:
-            hint = f"{num:03d}_...jpg hoặc CHARACTER REFERENCE"
+            hint = f"{num:03d}_...jpg, ..._{num}.png hoặc CHARACTER REFERENCE"
         else:
-            hint = f"{num:03d}_...jpg"
+            hint = f"{num:03d}_...jpg hoặc ..._{num}.png"
         lines.append(f"  • Scene {num:03d}{tr}  →  {hint}")
     lines.append("")
     lines.append(f"Thư mục:\n{images_dir.resolve()}")
@@ -1695,11 +1777,18 @@ def list_images(images_dir: Path):
 
 
 def parse_image_scene_num(path: Path):
-    match = re.match(r"^(\d{3})_", path.name)
+    """Nhận scene từ tên file: 001_..., số đầu tên, hoặc _N / -N ở cuối (bulk export)."""
+    name = path.name
+    match = re.match(r"^(\d{3})_", name)
     if match:
         return int(match.group(1))
-    match = re.match(r"^(\d+)", path.name)
-    return int(match.group(1)) if match else None
+    match = re.match(r"^(\d+)", name)
+    if match:
+        return int(match.group(1))
+    match = re.search(r"[_-](\d+)$", path.stem)
+    if match:
+        return int(match.group(1))
+    return None
 
 
 def is_reference_image(path: Path):
@@ -1742,8 +1831,8 @@ def get_image_size(path: Path) -> tuple[int, int]:
 
 
 def image_sort_key(path: Path):
-    match = re.match(r"(\d+)", path.name)
-    return int(match.group(1)) if match else 0
+    num = parse_image_scene_num(path)
+    return num if num is not None else 0
 
 
 def scale_vf(
@@ -1793,7 +1882,11 @@ def build_fast_video(
         return used
 
     concat_file, used, video_span = create_concat_file(pairs, workdir)
-    cmd = ["ffmpeg", "-y", "-fflags", "+genpts", "-f", "concat", "-safe", "0", "-i", str(concat_file)]
+    cmd = [
+        "ffmpeg", "-y",
+        *ffmpeg_vaapi_input_args(encoder),
+        "-fflags", "+genpts", "-f", "concat", "-safe", "0", "-i", str(concat_file),
+    ]
     if watermark_path:
         cmd += ["-i", str(watermark_path)]
     cmd += ["-i", str(audio)]
@@ -1806,12 +1899,18 @@ def build_fast_video(
         base_vf = base_vf.replace(",format=yuv420p", "")
         wm_parts = watermark_overlay_parts(1, width, watermark_opacity)
         filter_complex = f"[0:v]{base_vf}[vbase];{wm_parts[0]};{wm_parts[1]}"
-        cmd += ["-filter_complex", filter_complex, "-map", "[vout]", "-map", f"{audio_idx}:a"]
+        map_label = "[vout]"
+        if is_vaapi_encoder(encoder):
+            filter_complex, map_label = append_vaapi_filter_complex(filter_complex)
+        cmd += ["-filter_complex", filter_complex, "-map", map_label, "-map", f"{audio_idx}:a"]
     else:
+        vf = scale_vf(
+            width, height, fps, zoom_level, subtitle_path, workdir, subtitle_style, log_callback,
+        )
+        if is_vaapi_encoder(encoder):
+            vf = append_vaapi_upload(vf)
         cmd += [
-            "-vf", scale_vf(
-                width, height, fps, zoom_level, subtitle_path, workdir, subtitle_style, log_callback,
-            ),
+            "-vf", vf,
             "-map", "0:v", "-map", f"{audio_idx}:a",
         ]
 
