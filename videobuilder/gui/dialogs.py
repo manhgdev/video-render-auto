@@ -13,7 +13,7 @@ from videobuilder.gui.constants import C
 
 
 class DialogMixin:
-        def _dialog(self, title, message, kind="info", ask=False):
+        def _dialog(self, title, message, kind="info", ask=False, yes_label="Có", no_label="Không"):
             win = tk.Toplevel(self)
             win.title(title)
             win.transient(self)
@@ -107,12 +107,12 @@ class DialogMixin:
 
             if ask:
                 tk.Button(
-                    btn_row, text="Có", font=self._font(10, "bold"), bg="#dbeafe", fg="#1e3a8a",
+                    btn_row, text=yes_label, font=self._font(10, "bold"), bg="#dbeafe", fg="#1e3a8a",
                     activebackground="#bfdbfe", activeforeground="#1e3a8a", relief=tk.FLAT, padx=14, pady=5,
                     command=lambda: close(True),
                 ).pack(side=tk.RIGHT)
                 tk.Button(
-                    btn_row, text="Không", font=self._font(10), bg="#f3f4f6", fg=C["text"],
+                    btn_row, text=no_label, font=self._font(10), bg="#f3f4f6", fg=C["text"],
                     activebackground="#e5e7eb", relief=tk.FLAT, padx=14, pady=5,
                     command=lambda: close(False),
                 ).pack(side=tk.RIGHT, padx=(0, 8))
@@ -336,3 +336,18 @@ class DialogMixin:
 
         def _ask_yes_no(self, title, message, kind="info"):
             return self._dialog(title, message, kind=kind, ask=True)
+
+        def _ask_gen_missing_images(self, err: MissingSceneImagesError) -> bool:
+            message = (
+                f"{err}\n\n"
+                "Bạn có muốn tạo ảnh thiếu bằng Gemini không?\n"
+                "Scene vẫn thiếu sau khi tạo sẽ được bỏ qua khi render."
+            )
+            return self._dialog(
+                "Thiếu ảnh",
+                message,
+                kind="warning",
+                ask=True,
+                yes_label="Tạo ảnh",
+                no_label="Hủy",
+            )

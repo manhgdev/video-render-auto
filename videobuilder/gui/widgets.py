@@ -2,7 +2,9 @@
 # -*- coding: utf-8 -*-
 
 import os
+import queue
 import sys
+import threading
 from pathlib import Path
 
 import tkinter as tk
@@ -14,6 +16,39 @@ from videobuilder.gui.paths import default_output_folder
 
 
 class WidgetMixin:
+        def _init_ui_thread_bridge(self):
+            self._ui_callbacks: queue.SimpleQueue = queue.SimpleQueue()
+            self._ui_pump_active = False
+            self._schedule_ui_pump()
+
+        def _schedule_ui_pump(self):
+            if self._ui_pump_active:
+                return
+            self._ui_pump_active = True
+
+            def pump():
+                try:
+                    while True:
+                        self._ui_callbacks.get_nowait()()
+                except queue.Empty:
+                    pass
+                if self.winfo_exists():
+                    self.after(20, pump)
+                else:
+                    self._ui_pump_active = False
+
+            self.after(20, pump)
+
+        def _run_on_ui_thread(self, callback):
+            """Gọi callback trên Tk main thread (an toàn từ worker thread)."""
+            if threading.current_thread() is threading.main_thread():
+                try:
+                    self.after(0, callback)
+                    return
+                except RuntimeError:
+                    pass
+            self._ui_callbacks.put(callback)
+
         def _font(self, size=10, weight="normal"):
             key = (size, weight)
             if key not in self._fonts:
@@ -513,6 +548,22 @@ class WidgetMixin:
             stem = self._sanitize_export_stem(name)
             return str(Path(folder_text) / f"{stem}{suffix}")
 
+        def _apply_resolved_timeline_path(self, full_var, dir_var, name_var, *, audio_path: str = "") -> bool:
+            from videobuilder.core.timeline_paths import resolve_timeline_path
+
+            resolved = resolve_timeline_path(
+                full_var.get().strip() or None,
+                audio_path=audio_path or None,
+                folder=dir_var.get().strip() or None,
+                stem=name_var.get().strip() or None,
+            )
+            if resolved is None:
+                return False
+            full_var.set(str(resolved))
+            dir_var.set(self._format_output_dir(str(resolved.parent)))
+            name_var.set(resolved.stem)
+            return True
+
         def _sync_file_export_display(
             self,
             full_var,
@@ -524,6 +575,10 @@ class WidgetMixin:
             fallback_stem: str = "subtitle",
             audio_path: str = "",
         ):
+            if suffix == ".txt" and self._apply_resolved_timeline_path(
+                full_var, dir_var, name_var, audio_path=audio_path,
+            ):
+                return
             if from_output_var:
                 saved = full_var.get().strip()
                 if not saved:
@@ -538,6 +593,22 @@ class WidgetMixin:
                 audio_path=audio_path,
             )
             path = Path(full)
+            if path.is_file():
+                full_var.set(str(path))
+                dir_var.set(self._format_output_dir(str(path.parent)))
+                name_var.set(path.stem)
+                return
+            if not from_output_var:
+                saved = full_var.get().strip()
+                if saved and Path(saved).is_file():
+                    saved_path = Path(saved)
+                    dir_var.set(self._format_output_dir(str(saved_path.parent)))
+                    name_var.set(saved_path.stem)
+                    return
+            if suffix == ".txt" and self._apply_resolved_timeline_path(
+                full_var, dir_var, name_var, audio_path=audio_path,
+            ):
+                return
             full_var.set(str(path))
             dir_var.set(self._format_output_dir(str(path.parent)))
             name_var.set(path.stem)

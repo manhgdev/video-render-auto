@@ -13,13 +13,15 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from videobuilder.core.audio_pipeline import run_audio_pipeline, run_prompts_from_srt
+from videobuilder.core.create_srt import DEFAULT_LANGUAGE, DEFAULT_SRT_SPLIT
 from videobuilder.core.automation import (
     AutoProductionResult,
     AutomationError,
     _auto_report,
     slugify_topic,
 )
-from videobuilder.core.create_srt import DEFAULT_LANGUAGE, DEFAULT_SRT_SPLIT
+from videobuilder.core.timeline_paths import timeline_filename
+from videobuilder.core.ffmpeg_setup import is_frozen_app
 from videobuilder.core.pipeline import ProcessController, parse_srt_file
 
 _YOUTUBE_URL_RE = re.compile(
@@ -57,6 +59,10 @@ def check_yt_dlp_available() -> bool:
 def ensure_yt_dlp_available(*, auto_install: bool = True, log_callback=None) -> None:
     if check_yt_dlp_available():
         return
+    if is_frozen_app():
+        raise AutomationError(
+            "Thiếu yt-dlp trong bản .exe. Cập nhật VideoBuilder hoặc chạy bản dev: pip install yt-dlp"
+        )
     if not auto_install:
         raise AutomationError("Chưa cài yt-dlp. Chạy: pip install yt-dlp")
     if log_callback:
@@ -319,7 +325,7 @@ def analyze_youtube_to_prompts(
     topic = downloaded.title
     slug = slugify_topic(topic, fallback=downloaded.video_id)
     script_path = downloaded.folder / f"audio_script_{slug}.txt"
-    prompts_path = downloaded.folder / f"image_prompts_{slug}.txt"
+    prompts_path = downloaded.folder / timeline_filename(slug)
 
     if downloaded.subtitle_path and downloaded.subtitle_path.is_file():
         cues = parse_srt_file(downloaded.subtitle_path)

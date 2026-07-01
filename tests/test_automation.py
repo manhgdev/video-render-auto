@@ -56,6 +56,27 @@ def test_filter_unique_topics_removes_duplicates_and_excluded():
     ]
 
 
+def test_auto_packages_status_fast(monkeypatch):
+    from videobuilder.core.automation import auto_packages_status, invalidate_auto_packages_cache
+
+    monkeypatch.setattr(
+        "videobuilder.core.automation._auto_package_installed",
+        lambda name: name == "groq",
+    )
+    monkeypatch.setattr(
+        "videobuilder.core.create_srt.groq_api_key",
+        lambda: "key",
+    )
+    invalidate_auto_packages_cache()
+    status = auto_packages_status(force=True)
+    assert status["groq_ok"] is True
+    assert status["edge_tts_ok"] is False
+    assert status["needs_install"] is True
+    assert "edge-tts" in status["missing"]
+    assert status["ready_for_topics"] is True
+    assert status["ready_for_pipeline"] is False
+
+
 def test_discover_existing_topic_hints_from_project_dirs(tmp_path: Path):
     project = tmp_path / "top_5_sieu_nang_luc_con_nguoi_co_the_dat_duoc"
     project.mkdir()

@@ -7,7 +7,7 @@ from videobuilder.core.env_config import load_env
 from videobuilder.core.ffmpeg_setup import ensure_ffmpeg_on_path
 from videobuilder.core.pipeline import DEFAULT_PREVIEW_SECONDS, ENCODE_QUALITY_OPTIONS, ENCODER_OVERRIDE_OPTIONS, ZOOM_LEVEL_OPTIONS
 from videobuilder.core.create_srt import DEFAULT_LANGUAGE, DEFAULT_MODEL, DEFAULT_SRT_SPLIT, SRT_SPLIT_KEY_TO_LABEL
-from videobuilder.core.automation import DEFAULT_TTS_RATE, DEFAULT_TTS_VOICE, ensure_default_automation_prompt
+from videobuilder.core.automation import DEFAULT_TTS_RATE, DEFAULT_TTS_VOICE, automation_prompt_path_hint, warmup_auto_defaults
 from videobuilder.gui.constants import (
     C,
     EFFECT_KEY_TO_LABEL,
@@ -69,7 +69,7 @@ class VideoBuilderApp(
             self.audio_var = tk.StringVar()
             self.prompts_var = tk.StringVar()
             self.prompts_dir_var = tk.StringVar()
-            self.prompts_name_var = tk.StringVar(value="subtitle")
+            self.prompts_name_var = tk.StringVar(value="timeline")
             self.output_var = tk.StringVar(value=str(default_output_path()))
             self.output_dir_var = tk.StringVar()
             self.output_name_var = tk.StringVar(value=OUTPUT_STEM)
@@ -107,7 +107,7 @@ class VideoBuilderApp(
             self.srt_model_var = tk.StringVar(value=DEFAULT_MODEL)
             self.srt_language_var = tk.StringVar(value=DEFAULT_LANGUAGE)
             self.srt_split_var = tk.StringVar(value=SRT_SPLIT_KEY_TO_LABEL[DEFAULT_SRT_SPLIT])
-            self.auto_prompt_file_var = tk.StringVar(value=str(ensure_default_automation_prompt()))
+            self.auto_prompt_file_var = tk.StringVar(value=str(automation_prompt_path_hint()))
             self.auto_output_dir_var = tk.StringVar()
             self.auto_youtube_url_var = tk.StringVar()
             self.auto_seed_var = tk.StringVar(value="start")
@@ -140,6 +140,11 @@ class VideoBuilderApp(
             self.last_prompts_output = None
             self.srt_running = False
             self.auto_running = False
+            self.auto_installing = False
+            self._auto_path_warning = ""
+            self._auto_show_template_btn = False
+            self._auto_tab_refresh_running = False
+            self._auto_tab_refresh_job = None
             self.img_running = False
             self.img_installing = False
             self.img_engine_ok = False
@@ -165,15 +170,18 @@ class VideoBuilderApp(
             self._srt_status: StatusPresenter | None = None
             self._srt_whisper_btn_frame = None
             self._fonts = {}
+            self._init_ui_thread_bridge()
             self._setup_theme()
             self._setup_widget_colors()
             self._build_ui()
             self._load_settings()
+            self._hydrate_api_keys_from_env()
             self._sync_output_display(from_output_var=True)
             self._sync_prompts_display(from_output_var=True)
             self._refresh_ffmpeg_status()
             self._sync_duration_from_audio()
             self.after(300, self._sync_duration_from_audio)
+            self.after(500, warmup_auto_defaults)
             self._center_on_screen()
             self._log("VideoBuilder sẵn sàng.", "info")
             self.protocol("WM_DELETE_WINDOW", self._on_close)

@@ -25,6 +25,17 @@ def get_app_dir() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
+def get_bundle_dir() -> Path:
+    """File đóng gói trong .exe (PyInstaller _MEIPASS); dev = root repo."""
+    if getattr(sys, "frozen", False):
+        return Path(getattr(sys, "_MEIPASS", Path(sys.executable).resolve().parent))
+    return Path(__file__).resolve().parents[2]
+
+
+def is_frozen_app() -> bool:
+    return bool(getattr(sys, "frozen", False))
+
+
 def get_tools_dir() -> Path:
     return get_app_dir() / "tools" / "ffmpeg"
 

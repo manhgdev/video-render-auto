@@ -8,24 +8,262 @@ import tkinter as tk
 from tkinter import filedialog, ttk
 
 from videobuilder.core.create_srt import CreateSrtCancelled
+from videobuilder.core.path_checks import path_is_dir_safe, path_is_file_safe
+from videobuilder.core.pipeline import ProcessController
+from videobuilder.core.progress import reset_progress_floor
 from videobuilder.core.automation import (
     AutomationError,
-    DEFAULT_AUTOMATION_PROMPT,
     DEFAULT_TTS_RATE,
     DEFAULT_TTS_VOICE,
     TTS_VOICE_OPTIONS,
+    _default_auto_output_folder,
     _ensure_groq_llm_ready,
+    auto_packages_status,
+    automation_prompt_path_hint,
+    ensure_default_automation_prompt,
+    install_auto_packages,
     run_full_auto_pipeline,
     suggest_topics,
 )
-from videobuilder.core.pipeline import ProcessController
-from videobuilder.core.progress import reset_progress_floor
+from videobuilder.core.ffmpeg_setup import is_frozen_app
 from videobuilder.core.youtube_import import analyze_youtube_to_prompts
 from videobuilder.gui.constants import C
 from videobuilder.gui.paths import default_output_folder, is_writable_output_dir
 
 
 class AutoTabMixin:
+        def _on_auto_tab_shown(self):
+            """Tab đã hiện — chỉ cập nhật cache; kiểm tra nặng chạy nền."""
+            self._refresh_auto_tab_status(use_cache=True)
+            self._schedule_auto_tab_background_refresh()
+
+        def _schedule_auto_tab_background_refresh(self):
+            job = getattr(self, "_auto_tab_refresh_job", None)
+            if job is not None:
+                try:
+                    self.after_cancel(job)
+                except tk.TclError:
+                    pass
+            self._auto_tab_refresh_job = self.after(30, self._start_auto_tab_background_refresh)
+
+        def _start_auto_tab_background_refresh(self):
+            self._auto_tab_refresh_job = None
+            if getattr(self, "_auto_tab_refresh_running", False):
+                return
+            prompt = self.auto_prompt_file_var.get().strip()
+            output = self.auto_output_dir_var.get().strip()
+            self._auto_tab_refresh_running = True
+            threading.Thread(
+                target=self._auto_tab_background_refresh,
+                args=(prompt, output),
+                daemon=True,
+            ).start()
+
+        def _auto_tab_background_refresh(self, prompt: str, output: str):
+            path_notes: list[str] = []
+            prompt_value = None
+            output_value = None
+            show_template_btn = False
+            try:
+                if not prompt:
+                    prompt_value = str(automation_prompt_path_hint())
+                else:
+                    exists = path_is_file_safe(prompt)
+                    if exists is False:
+                        path_notes.append("File prompt không tồn tại — chọn lại hoặc bấm «Tạo mẫu»")
+                        show_template_btn = True
+                    elif exists is None:
+                        path_notes.append("Đang kiểm tra file prompt...")
+
+                if not output:
+                    output_value = self._format_output_dir(str(_default_auto_output_folder()))
+                else:
+                    exists = path_is_dir_safe(output)
+                    if exists is False:
+                        output_value = self._format_output_dir(str(_default_auto_output_folder()))
+                    elif exists is None:
+                        path_notes.append("Đang kiểm tra thư mục xuất...")
+
+                status = auto_packages_status(force=True)
+            except Exception:
+                status = auto_packages_status()
+                path_notes.append("Không kiểm tra đủ trạng thái — thử lại sau.")
+
+            def apply():
+                self._auto_tab_refresh_running = False
+                if prompt_value is not None:
+                    self.auto_prompt_file_var.set(prompt_value)
+                if output_value is not None:
+                    self.auto_output_dir_var.set(output_value)
+                if path_notes:
+                    self._auto_path_warning = " · ".join(path_notes)
+                elif getattr(self, "_auto_path_warning", ""):
+                    self._auto_path_warning = ""
+                self._auto_show_template_btn = show_template_btn
+                self._refresh_auto_tab_status(status=status, path_warning=self._auto_path_warning)
+                if getattr(self, "_footer_mode", "") == "auto":
+                    self._update_srt_open_buttons()
+
+            self._run_on_ui_thread(apply)
+
+        def _create_default_auto_prompt_file(self):
+            path = ensure_default_automation_prompt()
+            self.auto_prompt_file_var.set(str(path))
+            self._auto_path_warning = ""
+            self._save_settings()
+            self._refresh_auto_tab_status()
+            self._show_info("Prompt mẫu", f"Đã tạo file:\n{path}")
+
+        def _deferred_auto_settings_fixup(self):
+            """Sau load settings — không block khởi động."""
+            from videobuilder.core.automation import automation_prompt_path_hint
+
+            prompt_path = self.auto_prompt_file_var.get().strip()
+            if not prompt_path:
+                self.auto_prompt_file_var.set(str(automation_prompt_path_hint()))
+            output_path = self.auto_output_dir_var.get().strip()
+            if not output_path:
+                self.auto_output_dir_var.set(self._format_output_dir(str(_default_auto_output_folder())))
+            if self.auto_seed_var.get().strip().lower() == "start":
+                self.auto_seed_var.set("")
+            seed = self.auto_seed_var.get().strip()
+            if len(seed) > 800 and any(marker in seed for marker in ("STAGE ", "ROLE:", "CORE PRINCIPLE")):
+                self.auto_seed_var.set("")
+                self._auto_path_warning = "Ô ý tưởng đã xóa prompt dài — dùng «Tạo mẫu» hoặc «Chọn» file."
+            self._schedule_auto_tab_background_refresh()
+
+        def _fix_auto_tab_paths(self):
+            """Giữ tương thích — chỉ gọi từ background refresh."""
+            self._schedule_auto_tab_background_refresh()
+
+        def _format_auto_status_message(self, status: dict, path_warning: str = "") -> str:
+            if path_warning:
+                return path_warning
+            if status["ready_for_pipeline"]:
+                return "Sẵn sàng · groq · edge-tts · yt-dlp"
+            parts: list[str] = []
+            if not status["groq_key"]:
+                parts.append("Thiếu Groq API key (tab API key)")
+            if not status["groq_ok"]:
+                parts.append("thiếu groq")
+            if not status["edge_tts_ok"]:
+                parts.append("thiếu edge-tts (TTS)")
+            if not status["yt_dlp_ok"]:
+                parts.append("thiếu yt-dlp (YouTube)")
+            if status["needs_install"]:
+                parts.append("bấm «Cài đặt»")
+            return " · ".join(parts) if parts else "Cần cấu hình"
+
+        def _refresh_auto_tab_status(self, *, status: dict | None = None, use_cache: bool = False, path_warning: str | None = None):
+            """Cập nhật banner + nút Cài đặt — không block UI."""
+            if status is None:
+                status = auto_packages_status() if use_cache else auto_packages_status(force=True)
+            self.auto_packages_ok = status["ready_for_topics"]
+            warning = path_warning if path_warning is not None else getattr(self, "_auto_path_warning", "")
+            message = self._format_auto_status_message(status, warning)
+            self.auto_status_var.set(message)
+            if getattr(self, "_auto_status_wrap", None) is not None:
+                if status["needs_install"]:
+                    bg, fg = C["warn_bg"], C["warn_fg"]
+                    if not self.auto_installing and not is_frozen_app():
+                        self.auto_install_btn.pack(side=tk.LEFT, padx=(8, 0))
+                    else:
+                        self.auto_install_btn.pack_forget()
+                elif status["ready_for_pipeline"]:
+                    bg, fg = C["ok_bg"], C["ok_fg"]
+                    self.auto_install_btn.pack_forget()
+                else:
+                    bg, fg = C["warn_bg"], C["warn_fg"]
+                    self.auto_install_btn.pack_forget()
+                if getattr(self, "_auto_show_template_btn", False) and not is_frozen_app():
+                    self.auto_prompt_template_btn.pack(side=tk.LEFT, padx=(4, 0))
+                else:
+                    self.auto_prompt_template_btn.pack_forget()
+                self._auto_status_wrap.configure(bg=bg)
+                self._auto_status_inner.configure(bg=bg)
+                self._auto_status_msg.configure(bg=bg, fg=fg)
+            if getattr(self, "_footer_mode", "") == "auto":
+                self.srt_status_var.set(message[:120])
+            self._update_auto_action_buttons(status)
+
+        def _update_auto_action_buttons(self, status: dict | None = None):
+            status = status or auto_packages_status()
+            busy = self.auto_running or self.auto_installing
+            topics_ok = status["ready_for_topics"] and not busy
+            pipeline_ok = status["ready_for_pipeline"] and not busy
+            youtube_ok = status["ready_for_youtube"] and not busy
+            self._set_auto_button_enabled(self.auto_topics_btn, topics_ok)
+            self._set_auto_button_enabled(self.auto_next_btn, pipeline_ok)
+            self._set_auto_button_enabled(self.auto_youtube_btn, youtube_ok)
+
+        def _install_auto_packages(self):
+            if self.auto_installing or self.auto_running:
+                return
+            if is_frozen_app():
+                self._show_warning(
+                    "Cài đặt",
+                    "Bản .exe không cài pip được.\nChạy: pip install groq edge-tts yt-dlp\nhoặc dùng bản exe build mới.",
+                )
+                return
+            status = auto_packages_status()
+            if not status["needs_install"]:
+                self._refresh_auto_tab_status()
+                return
+            self.auto_installing = True
+            self.auto_install_btn.configure(state=tk.DISABLED, text="Đang cài...")
+            self.auto_status_var.set(f"Đang cài: {', '.join(status['missing'])}...")
+            self._update_auto_action_buttons()
+
+            def worker():
+                err_msg = None
+                try:
+                    install_auto_packages(log_callback=self._log)
+                except Exception as err:
+                    err_msg = str(err)
+
+                def done():
+                    self.auto_installing = False
+                    if getattr(self, "auto_install_btn", None) is not None:
+                        self.auto_install_btn.configure(state=tk.NORMAL, text="Cài đặt")
+                    self._refresh_auto_tab_status()
+                    if err_msg:
+                        self._show_error("Cài đặt", err_msg)
+                    else:
+                        self._show_info("Xong", "Đã cài gói tab Tự động (groq, edge-tts, yt-dlp).")
+                        self._log("Đã cài gói tab Tự động.", "success")
+
+                self._run_on_ui_thread(done)
+
+            threading.Thread(target=worker, daemon=True).start()
+
+        def _auto_require_topics(self) -> bool:
+            status = auto_packages_status()
+            if not status["groq_key"]:
+                self._show_warning("Tự động", "Nhập Groq API key ở tab API key.")
+                return False
+            if not status["groq_ok"]:
+                self._show_warning("Tự động", "Thiếu gói groq — bấm «Cài đặt» trên tab này.")
+                return False
+            return True
+
+        def _auto_require_pipeline(self) -> bool:
+            if not self._auto_require_topics():
+                return False
+            status = auto_packages_status()
+            if not status["edge_tts_ok"]:
+                self._show_warning("Tự động", "Thiếu edge-tts (TTS) — bấm «Cài đặt».")
+                return False
+            return True
+
+        def _auto_require_youtube(self) -> bool:
+            if not self._auto_require_topics():
+                return False
+            status = auto_packages_status()
+            if not status["yt_dlp_ok"]:
+                self._show_warning("Tự động", "Thiếu yt-dlp — bấm «Cài đặt».")
+                return False
+            return True
+
         def _auto_widget_value(self, widget, fallback_var=None) -> str:
             if widget is None:
                 return fallback_var.get().strip() if fallback_var is not None else ""
@@ -86,6 +324,8 @@ class AutoTabMixin:
             self._open_path(path)
 
         def _auto_analyze_youtube(self):
+            if not self._auto_require_youtube():
+                return
             url = self._auto_widget_value(getattr(self, "auto_youtube_text", None), self.auto_youtube_url_var)
             if not url:
                 self._show_warning("Thiếu URL", "Dán URL YouTube trước khi phân tích video.")
@@ -174,10 +414,7 @@ class AutoTabMixin:
 
         def _set_auto_running(self, active: bool):
             self.auto_running = active
-            enabled = not active
-            self._set_auto_button_enabled(self.auto_topics_btn, enabled)
-            self._set_auto_button_enabled(self.auto_next_btn, enabled)
-            self._set_auto_button_enabled(self.auto_youtube_btn, enabled)
+            self._refresh_auto_tab_status()
             self._update_render_control_buttons()
 
         def _set_auto_progress(self, pct, message):
@@ -239,7 +476,7 @@ class AutoTabMixin:
                     self._update_srt_open_buttons()
                     self._update_render_control_buttons()
 
-                self.after(0, done)
+                self._run_on_ui_thread(done)
 
             threading.Thread(target=worker, daemon=True).start()
 
@@ -286,6 +523,8 @@ class AutoTabMixin:
             )
 
         def _auto_suggest_topics(self):
+            if not self._auto_require_topics():
+                return
             try:
                 prompt_file, output_dir = self._auto_validate_common()
             except ValueError as err:
@@ -306,6 +545,8 @@ class AutoTabMixin:
             self._run_auto_worker("Gợi ý chủ đề", task)
 
         def _auto_run_full(self):
+            if not self._auto_require_pipeline():
+                return
             try:
                 prompt_file, output_dir = self._auto_validate_common()
             except ValueError as err:
@@ -341,12 +582,45 @@ class AutoTabMixin:
 
         def _build_auto_tab(self, parent):
             parent.columnconfigure(0, weight=1)
-            parent.rowconfigure(1, weight=1)
+            parent.rowconfigure(2, weight=1)
 
             lw = 11
 
+            self._auto_status_wrap = tk.Frame(parent, bg=C["warn_bg"], highlightbackground=C["border"], highlightthickness=1)
+            self._auto_status_wrap.grid(row=0, column=0, sticky="ew", pady=(0, 6))
+            self._auto_status_inner = tk.Frame(self._auto_status_wrap, bg=C["warn_bg"])
+            self._auto_status_inner.pack(fill=tk.X, padx=10, pady=8)
+            self.auto_status_var = tk.StringVar(value="Mở tab để kiểm tra gói...")
+            self._auto_status_msg = tk.Label(
+                self._auto_status_inner,
+                textvariable=self.auto_status_var,
+                bg=C["warn_bg"],
+                fg=C["warn_fg"],
+                font=self._font(9),
+                anchor="w",
+                justify=tk.LEFT,
+                wraplength=900,
+            )
+            self._auto_status_msg.pack(side=tk.LEFT, fill=tk.X, expand=True)
+            self._auto_install_btn_frame = ttk.Frame(self._auto_status_inner, style="Card.TFrame")
+            self._auto_install_btn_frame.pack(side=tk.RIGHT)
+            self.auto_install_btn = ttk.Button(
+                self._auto_install_btn_frame,
+                text="Cài đặt",
+                command=self._install_auto_packages,
+                style="Small.TButton",
+                width=9,
+            )
+            self.auto_prompt_template_btn = ttk.Button(
+                self._auto_install_btn_frame,
+                text="Tạo mẫu",
+                command=self._create_default_auto_prompt_file,
+                style="Small.TButton",
+                width=8,
+            )
+
             settings = ttk.Frame(parent, style="Card.TFrame")
-            settings.grid(row=0, column=0, sticky="ew", pady=(0, 6))
+            settings.grid(row=1, column=0, sticky="ew", pady=(0, 6))
             settings.columnconfigure(1, weight=1)
             settings.columnconfigure(3, weight=1)
 
@@ -385,7 +659,7 @@ class AutoTabMixin:
             ).grid(row=0, column=1)
 
             workflows = ttk.Frame(parent, style="Card.TFrame")
-            workflows.grid(row=1, column=0, sticky="nsew")
+            workflows.grid(row=2, column=0, sticky="nsew")
             workflows.columnconfigure(0, weight=1, uniform="auto_flow")
             workflows.columnconfigure(1, weight=1, uniform="auto_flow")
             workflows.rowconfigure(0, weight=1)

@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 
 APP_NAME = "VideoBuilder"
-APP_VERSION = "1.2.8"
+APP_VERSION = "1.2.14"
 APP_PRODUCT = "Video Builder"
 APP_DESCRIPTION = "Video Builder — ghép ảnh + audio thành video Shorts"
 APP_COMPANY = "manhgdev"

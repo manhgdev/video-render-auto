@@ -27,12 +27,16 @@ from videobuilder.core.pipeline import (
     build_scene_pairs,
     build_video,
     detect_resolution_from_images,
+    find_missing_scene_images,
     get_media_duration,
+    index_images_by_scene,
     parse_prompt_scenes,
+    resolve_scene_image,
     strip_video_metadata,
     validate_scene_images,
 )
 from videobuilder.core.progress import reset_progress_floor
+from videobuilder.core.timeline_paths import resolve_timeline_path
 from videobuilder.gui.constants import (
     C,
     EFFECT_LABEL_TO_KEY,
@@ -171,7 +175,7 @@ class RenderTabMixin:
 
             def log(msg):
                 self._log(msg, "info")
-                self.after(0, lambda: self.ffmpeg_status_var.set(msg))
+                self._run_on_ui_thread(lambda: self.ffmpeg_status_var.set(msg))
 
             def worker():
                 try:
@@ -193,7 +197,7 @@ class RenderTabMixin:
                         self._log(result.get("message", "Không cài được FFmpeg."), "error")
                         self._show_error("Lỗi", result.get("message", "Không cài được FFmpeg."))
 
-                self.after(0, done)
+                self._run_on_ui_thread(done)
 
             threading.Thread(target=worker, daemon=True).start()
 
@@ -295,7 +299,10 @@ class RenderTabMixin:
             n_scenes = 40
             try:
                 scenes = parse_prompt_scenes(Path(options["prompts"]), audio_dur)
-                pairs = build_scene_pairs(Path(options["images"]), scenes, audio_dur)
+                skip_missing = bool(options.get("skip_missing_images"))
+                pairs = build_scene_pairs(
+                    Path(options["images"]), scenes, audio_dur, skip_missing=skip_missing,
+                )
                 n_scenes = max(1, len(pairs))
             except Exception:
                 pass
@@ -334,9 +341,9 @@ class RenderTabMixin:
                         self._render_status.update(message)
                 self._render_tracker.ingest(pct, touch_time=bool(message))
 
-            self.after(0, apply)
+            self._run_on_ui_thread(apply)
 
-        def _validate(self, preview=False):
+        def _validate(self, preview=False, skip_missing_images=False):
             images = self.images_var.get().strip()
             audio = self.audio_var.get().strip()
             prompts = self.prompts_var.get().strip()
@@ -345,10 +352,26 @@ class RenderTabMixin:
 
             if not images or not Path(images).is_dir():
                 raise ValueError("Chọn thư mục ảnh hợp lệ.")
+            from videobuilder.core.pipeline import resolve_images_dir
+
+            images_resolved = resolve_images_dir(images)
+            if str(images_resolved) != images:
+                self.images_var.set(str(images_resolved))
+                images = str(images_resolved)
             if not audio or not Path(audio).is_file():
                 raise ValueError("Chọn file audio hợp lệ.")
-            if not prompts or not Path(prompts).is_file():
-                raise ValueError("Chọn file prompt hợp lệ.")
+            resolved = resolve_timeline_path(
+                prompts or None,
+                audio_path=audio,
+                folder=self.prompts_dir_var.get().strip() or None,
+                stem=self.prompts_name_var.get().strip() or None,
+            )
+            if resolved is None:
+                raise ValueError("Chọn file timeline hợp lệ.")
+            prompts = str(resolved)
+            if prompts != self.prompts_var.get().strip():
+                self.prompts_var.set(prompts)
+                self._sync_prompts_display(from_output_var=True)
             if not check_ffmpeg()["ok"]:
                 raise ValueError("Chưa có FFmpeg — bấm «Cài FFmpeg» trước khi render.")
             try:
@@ -361,16 +384,40 @@ class RenderTabMixin:
             try:
                 scenes = parse_prompt_scenes(Path(prompts), audio_duration)
             except Exception as exc:
-                raise ValueError(f"Không đọc được file prompt:\n{exc}") from exc
+                raise ValueError(f"Không đọc được file timeline:\n{exc}") from exc
+
+            images_resolved = resolve_images_dir(images, scenes=scenes)
+            if str(images_resolved) != images:
+                self.images_var.set(str(images_resolved))
+                images = str(images_resolved)
 
             try:
-                validate_scene_images(scenes, Path(images))
+                if skip_missing_images:
+                    missing = find_missing_scene_images(scenes, Path(images))
+                    if missing:
+                        by_scene, refs = index_images_by_scene(Path(images))
+                        seen: set[int] = set()
+                        has_any = False
+                        for scene_num, _start, _end in scenes:
+                            if scene_num in seen:
+                                continue
+                            seen.add(scene_num)
+                            if resolve_scene_image(scene_num, by_scene, refs) is not None:
+                                has_any = True
+                                break
+                        if not has_any:
+                            raise ValueError(
+                                "Không có scene nào có ảnh để render.\n"
+                                "Tạo ảnh thất bại hoặc thư mục ảnh trống."
+                            )
+                else:
+                    validate_scene_images(scenes, Path(images))
             except MissingSceneImagesError:
                 raise
             except Exception as exc:
                 # Thư mục ảnh rỗng / sai đường dẫn thường bị hiểu nhầm là lỗi prompt
                 msg = str(exc).strip()
-                if msg.startswith("Không tìm thấy ảnh trong thư mục"):
+                if msg.startswith("Không tìm thấy ảnh trong thư mục") or "không phải ảnh hợp lệ" in msg:
                     raise ValueError(
                         f"{msg}\n\n"
                         "Gợi ý: tab Tạo ảnh → tạo ảnh scene vào đúng thư mục, "
@@ -505,7 +552,40 @@ class RenderTabMixin:
                 "subtitle_style": subtitle_style,
                 "preview_seconds": preview_seconds,
                 "strip_metadata": self.strip_metadata_var.get().strip() == "Bật",
+                "skip_missing_images": skip_missing_images,
             }
+
+        def _prepare_gen_missing_images(self) -> bool:
+            from videobuilder.core.generate_images import apply_env_gemini_key, check_gemini_image
+
+            self._apply_gemini_api_key(silent=True)
+            apply_env_gemini_key()
+            status = check_gemini_image(api_key=self.gemini_api_key_var.get())
+            if status.get("ok"):
+                return True
+            if status.get("needs_install"):
+                self._show_warning(
+                    "Chưa sẵn sàng",
+                    "Cần Gemini API key và google-genai — cấu hình ở tab API key.",
+                )
+            else:
+                self._show_warning(
+                    "Chưa sẵn sàng",
+                    status.get("message", "Nhập Gemini key ở tab API key."),
+                )
+            return False
+
+        def _begin_render_with_missing_images(self, err: MissingSceneImagesError, *, preview: bool):
+            if not self._prepare_gen_missing_images():
+                return
+            try:
+                options = self._validate(preview=preview, skip_missing_images=True)
+            except ValueError as val_err:
+                self._show_validation_error(val_err)
+                return
+            options["skip_missing_images"] = True
+            options["gen_missing_scenes"] = list(err.missing)
+            self._run_build(options)
 
         def _run_build(self, options, ask_open=True):
             self.rendering = True
@@ -523,6 +603,46 @@ class RenderTabMixin:
             def worker():
                 cancelled = False
                 try:
+                    gen_missing = options.get("gen_missing_scenes") or []
+                    if gen_missing:
+                        from videobuilder.core.generate_images import (
+                            generate_images_from_prompts,
+                            resolve_aspect_ratio,
+                        )
+
+                        aspect = resolve_aspect_ratio(
+                            self._get_img_aspect_key(),
+                            resolution_label=self.resolution_var.get().strip(),
+                        )
+                        self._log(
+                            f"Tạo {len(gen_missing)} ảnh thiếu (Gemini)...",
+                            "info",
+                        )
+                        generate_images_from_prompts(
+                            options["prompts"],
+                            options["images"],
+                            aspect_ratio=aspect,
+                            scene_nums=gen_missing,
+                            skip_existing=True,
+                            skip_errors=True,
+                            api_key=self.gemini_api_key_var.get().strip(),
+                            progress_callback=self._set_progress,
+                            log_callback=self._log,
+                            process_controller=self.process_controller,
+                        )
+                        audio_dur = get_media_duration(Path(options["audio"]))
+                        if options.get("preview_seconds"):
+                            audio_dur = min(audio_dur, float(options["preview_seconds"]))
+                        still = find_missing_scene_images(
+                            parse_prompt_scenes(Path(options["prompts"]), audio_dur),
+                            Path(options["images"]),
+                        )
+                        if still:
+                            self._log(
+                                f"Bỏ qua {len(still)} scene vẫn thiếu ảnh khi render.",
+                                "warn",
+                            )
+
                     build_video(
                         audio=options["audio"],
                         prompts=options["prompts"],
@@ -546,6 +666,7 @@ class RenderTabMixin:
                         preview_seconds=options["preview_seconds"],
                         log_callback=self._log,
                         process_controller=self.process_controller,
+                        skip_missing_images=bool(options.get("skip_missing_images")),
                     )
                     speed_pct = options.get("speed_pct", 100)
                     strip_meta = options.get("strip_metadata", False)
@@ -595,7 +716,7 @@ class RenderTabMixin:
                         ):
                             self._open_path(options["output"])
 
-                    self.after(0, on_done)
+                    self._run_on_ui_thread(on_done)
                 except RenderCancelled:
                     cancelled = True
                     self._log("Đã hủy render.", "warn")
@@ -603,12 +724,12 @@ class RenderTabMixin:
                         Path(options["output"]).unlink(missing_ok=True)
                     except OSError:
                         pass
-                    self.after(0, lambda: self.status_var.set("Đã hủy render"))
+                    self._run_on_ui_thread(lambda: self.status_var.set("Đã hủy render"))
                 except Exception as err:
                     self._log(f"Lỗi render: {err}", "error")
                     self._log(traceback.format_exc(), "error")
                     err_copy = err
-                    self.after(0, lambda e=err_copy: self._show_render_error(e))
+                    self._run_on_ui_thread(lambda e=err_copy: self._show_render_error(e))
                 finally:
                     def done():
                         if cancelled:
@@ -621,7 +742,7 @@ class RenderTabMixin:
                         self.process_controller = None
                         self._set_rendering(False)
 
-                    self.after(0, done)
+                    self._run_on_ui_thread(done)
 
             threading.Thread(target=worker, daemon=True).start()
 
@@ -634,7 +755,11 @@ class RenderTabMixin:
                 return
             try:
                 options = self._validate(preview=False)
-            except (ValueError, MissingSceneImagesError) as err:
+            except MissingSceneImagesError as err:
+                if self._ask_gen_missing_images(err):
+                    self._begin_render_with_missing_images(err, preview=False)
+                return
+            except ValueError as err:
                 self._show_validation_error(err)
                 return
             self._run_build(options)
@@ -651,7 +776,11 @@ class RenderTabMixin:
                 return
             try:
                 options = self._validate(preview=True)
-            except (ValueError, MissingSceneImagesError) as err:
+            except MissingSceneImagesError as err:
+                if self._ask_gen_missing_images(err):
+                    self._begin_render_with_missing_images(err, preview=True)
+                return
+            except ValueError as err:
                 self._show_validation_error(err)
                 return
             self._run_build(options)

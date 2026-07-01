@@ -124,7 +124,7 @@ class ProjectTabMixin:
                 self.log_text.see(tk.END)
                 self.log_text.configure(state=tk.DISABLED)
 
-            self.after(0, append)
+            self._run_on_ui_thread(append)
 
         def _clear_log(self):
             self.log_text.configure(state=tk.NORMAL)
@@ -185,8 +185,29 @@ class ProjectTabMixin:
 
         def _pick_images(self):
             path = filedialog.askdirectory(parent=self, title="Chọn thư mục ảnh")
-            if path:
-                self.images_var.set(path)
+            if not path:
+                return
+            from videobuilder.core.pipeline import count_valid_images, resolve_images_dir
+
+            resolved = resolve_images_dir(path)
+            self.images_var.set(str(resolved))
+            valid, total = count_valid_images(resolved)
+            invalid = total - valid
+            if valid == 0 and total > 0:
+                self._show_warning(
+                    "Ảnh không hợp lệ",
+                    f"Thư mục có {total} file .png/.jpg nhưng không phải ảnh thật.\n"
+                    "Thường gặp khi bulk Gemini tải lỗi (file HTML ~300 byte).\n"
+                    "Hãy tải lại hoặc chọn thư mục veo-folder có ảnh .jpg.",
+                )
+            elif invalid > 0:
+                self._show_warning(
+                    "Ảnh tải lỗi",
+                    f"Chỉ {valid}/{total} file là ảnh hợp lệ; {invalid} file lỗi (HTML/thiếu dữ liệu).\n"
+                    "Bulk Gemini thường tải hỏng — hãy xuất lại hoặc dùng veo-folder.",
+                )
+            elif str(resolved) != str(Path(path).resolve()):
+                self._show_info("Thư mục ảnh", f"Đã dùng thư mục con:\n{resolved}")
 
         def _pick_audio(self):
             path = filedialog.askopenfilename(
@@ -237,6 +258,23 @@ class ProjectTabMixin:
             self.prompts_dir_var.set("")
             self.prompts_name_var.set("")
 
+        def _maybe_discover_images_dir(self):
+            if self.images_var.get().strip():
+                return
+            from videobuilder.core.pipeline import discover_images_dir
+            from videobuilder.core.timeline_paths import resolve_timeline_path
+
+            timeline = resolve_timeline_path(
+                self.prompts_var.get().strip() or None,
+                audio_path=self.audio_var.get().strip() or None,
+            )
+            discovered = discover_images_dir(
+                timeline_path=timeline,
+                audio_path=self.audio_var.get().strip() or None,
+            )
+            if discovered is not None:
+                self.images_var.set(str(discovered))
+
         def _sync_prompts_display(self, from_output_var=False):
             self._sync_file_export_display(
                 self.prompts_var,
@@ -244,8 +282,10 @@ class ProjectTabMixin:
                 self.prompts_name_var,
                 ".txt",
                 from_output_var=from_output_var,
+                fallback_stem="timeline",
                 audio_path=self.audio_var.get().strip(),
             )
+            self._maybe_discover_images_dir()
 
         def _pick_watermark(self):
             path = filedialog.askopenfilename(
@@ -536,13 +576,7 @@ class ProjectTabMixin:
             history = data.get("auto_topic_history", [])
             if isinstance(history, list):
                 self.auto_topic_history = [str(item).strip() for item in history if str(item).strip()][-200:]
-            if self.auto_seed_var.get().strip().lower() == "start":
-                self.auto_seed_var.set("")
-            self._apply_groq_api_key(silent=True)
-            from videobuilder.core.generate_images import apply_env_gemini_key, set_gemini_api_key
-
-            set_gemini_api_key(self.gemini_api_key_var.get())
-            apply_env_gemini_key()
+            self.after(200, self._deferred_auto_settings_fixup)
             if not self.img_prompts_var.get().strip() and self.prompts_var.get().strip():
                 self.img_prompts_var.set(self.prompts_var.get())
             if not self.img_output_dir_var.get().strip() and self.images_var.get().strip():

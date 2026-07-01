@@ -64,27 +64,31 @@ class ShellMixin:
 
         def _apply_footer_mode(self, mode: str):
             """Chuyển footer giữa render (Dự án/Cài đặt) và SRT / Tạo ảnh."""
+            prev = getattr(self, "_footer_mode", "render")
             is_srt = mode in ("srt", "auto", "image")
+            was_srt = prev in ("srt", "auto", "image")
             self._footer_mode = mode
+            light_srt_switch = is_srt and was_srt and prev != mode
 
             if not self._log_block.winfo_ismapped():
                 self._log_block.pack(fill=tk.X)
             if getattr(self, "log_text", None) is not None:
                 self.log_text.configure(height=5 if is_srt else 4)
 
-            if is_srt:
-                self._render_bar.wrap.pack_forget()
-                self._srt_bar.wrap.pack(fill=tk.BOTH, expand=True)
-                self._footer_duration_label.pack_forget()
-                self._footer_percent_label.configure(textvariable=self.srt_percent_var)
-                self._footer_status_label.configure(textvariable=self.srt_status_var)
-            else:
-                self._srt_bar.wrap.pack_forget()
-                self._render_bar.wrap.pack(fill=tk.BOTH, expand=True)
-                if not self._footer_duration_label.winfo_ismapped():
-                    self._footer_duration_label.pack(side=tk.RIGHT, padx=(0, 4))
-                self._footer_percent_label.configure(textvariable=self.percent_var)
-                self._footer_status_label.configure(textvariable=self.status_var)
+            if not light_srt_switch:
+                if is_srt:
+                    self._render_bar.wrap.pack_forget()
+                    self._srt_bar.wrap.pack(fill=tk.BOTH, expand=True)
+                    self._footer_duration_label.pack_forget()
+                    self._footer_percent_label.configure(textvariable=self.srt_percent_var)
+                    self._footer_status_label.configure(textvariable=self.srt_status_var)
+                else:
+                    self._srt_bar.wrap.pack_forget()
+                    self._render_bar.wrap.pack(fill=tk.BOTH, expand=True)
+                    if not self._footer_duration_label.winfo_ismapped():
+                        self._footer_duration_label.pack(side=tk.RIGHT, padx=(0, 4))
+                    self._footer_percent_label.configure(textvariable=self.percent_var)
+                    self._footer_status_label.configure(textvariable=self.status_var)
 
             self.render_btn.pack_forget()
             self.srt_create_btn.pack_forget()
@@ -101,7 +105,7 @@ class ShellMixin:
             elif mode == "image":
                 self.img_create_btn.pack(side=tk.LEFT)
             elif mode == "auto":
-                self._update_srt_open_buttons()
+                pass
             else:
                 self.render_btn.pack(side=tk.LEFT)
 
@@ -119,9 +123,11 @@ class ShellMixin:
                     self._update_img_controls_locked()
                 else:
                     self.open_video_btn.configure(text="Mở srt", command=self._open_srt)
-                    self._update_srt_open_buttons()
                     if mode == "srt":
+                        self._update_srt_open_buttons()
                         self._update_srt_controls_locked()
+                    elif mode == "auto":
+                        self.after(0, self._update_srt_open_buttons)
             else:
                 self.open_video_btn.configure(text="Mở video", command=self._open_video)
                 enabled = bool(self.last_output and Path(self.last_output).is_file())
@@ -144,13 +150,14 @@ class ShellMixin:
             if key in ("srt", "auto", "image"):
                 self._apply_footer_mode(key)
                 if key == "srt":
-                    self._refresh_whisper_status()
-                    self._ensure_srt_packages_auto()
+                    self.after(1, self._schedule_srt_tab_refresh)
+                elif key == "auto":
+                    self.after(0, self._on_auto_tab_shown)
                 elif key == "image":
                     self._refresh_img_engine_status()
-                    self._ensure_img_packages_auto()
-                elif key == "api":
-                    self._refresh_api_tab_status()
+            elif key == "api":
+                self._apply_footer_mode("render")
+                self._refresh_api_tab_status()
             else:
                 self._apply_footer_mode("render")
             track = C["tab_track"]
@@ -418,7 +425,7 @@ class ShellMixin:
             self._build_image_tab(tab_image)
             self._build_api_tab(tab_api)
             self._sync_srt_model_hint()
-            self._refresh_whisper_status()
+            self.after(1, self._schedule_srt_tab_refresh)
 
             tab_files.columnconfigure(1, weight=1)
             self._path_field(tab_files, 0, "Thư mục ảnh", self.images_var, self._pick_images, help_key="images_dir")

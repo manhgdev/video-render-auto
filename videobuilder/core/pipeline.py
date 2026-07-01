@@ -265,6 +265,134 @@ def _wait_process(proc, process_controller=None):
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp"}
 _ENCODER_CACHE = None
 
+_EXPORT_IMAGE_DIR_PREFIXES = ("gemini-folder", "veo-folder")
+
+
+def is_valid_image_file(path: Path) -> bool:
+    """Ảnh thật (PNG/JPEG/WebP) — loại file .png giả/HTML từ bulk export lỗi."""
+    try:
+        with Path(path).open("rb") as handle:
+            head = handle.read(16)
+    except OSError:
+        return False
+    if head.startswith(b"\x89PNG\r\n\x1a\n"):
+        return True
+    if head.startswith(b"\xff\xd8\xff"):
+        return True
+    return head.startswith(b"RIFF") and len(head) >= 12 and head[8:12] == b"WEBP"
+
+
+def _collect_image_files(images_dir: Path, *, recursive: bool = True) -> list[Path]:
+    images_dir = Path(images_dir)
+    files = [
+        p for p in images_dir.iterdir()
+        if p.is_file() and p.suffix.lower() in IMAGE_EXTS
+    ]
+    if recursive and not files:
+        files = [
+            p for p in images_dir.rglob("*")
+            if p.is_file() and p.suffix.lower() in IMAGE_EXTS
+        ]
+    return files
+
+
+def count_valid_images(images_dir: Path, *, recursive: bool = True) -> tuple[int, int]:
+    """(số ảnh hợp lệ, tổng file đuôi ảnh)."""
+    files = _collect_image_files(images_dir, recursive=recursive)
+    valid = sum(1 for path in files if is_valid_image_file(path))
+    return valid, len(files)
+
+
+def resolve_images_dir(path: str | Path, scenes=None) -> Path:
+    """Chọn thư mục ảnh tốt nhất — kể cả veo-folder* anh em khi gemini-folder lỗi."""
+    base = Path(path).resolve()
+    if not base.is_dir():
+        raise RuntimeError(f"Không phải thư mục ảnh: {base}")
+
+    candidates: set[Path] = {base}
+    try:
+        for child in base.iterdir():
+            if not child.is_dir():
+                continue
+            low = child.name.lower()
+            if any(low.startswith(prefix) for prefix in _EXPORT_IMAGE_DIR_PREFIXES) or low in (
+                "images", "img", "imgs",
+            ):
+                candidates.add(child.resolve())
+    except OSError:
+        pass
+    try:
+        parent = base.parent
+        if parent.is_dir():
+            for sibling in parent.iterdir():
+                if not sibling.is_dir():
+                    continue
+                low = sibling.name.lower()
+                if any(low.startswith(prefix) for prefix in _EXPORT_IMAGE_DIR_PREFIXES):
+                    candidates.add(sibling.resolve())
+    except OSError:
+        pass
+
+    def folder_stats(folder: Path) -> tuple[int, int, int]:
+        valid, total = count_valid_images(folder)
+        missing = len(find_missing_scene_images(scenes, folder)) if scenes else 0
+        return missing, total - valid, -valid
+
+    best = base
+    best_stats = folder_stats(base)
+    for folder in candidates:
+        if folder == base:
+            continue
+        stats = folder_stats(folder)
+        if stats < best_stats:
+            best = folder
+            best_stats = stats
+
+    if best != base:
+        base_valid, base_total = count_valid_images(base)
+        base_miss = folder_stats(base)[0]
+        if scenes:
+            if best_stats[0] < base_miss:
+                return best.resolve()
+            if best_stats[0] == base_miss and -best_stats[2] > base_valid:
+                return best.resolve()
+        elif -best_stats[2] > base_valid and (base_valid == 0 or (base_total > 0 and base_valid < base_total * 0.5)):
+            return best.resolve()
+    return base.resolve()
+
+
+def discover_images_dir(
+    *,
+    timeline_path: str | Path | None = None,
+    audio_path: str | Path | None = None,
+) -> Path | None:
+    """Tìm thư mục ảnh cạnh timeline/audio (images, gemini-folder*, veo-folder*)."""
+    bases: list[Path] = []
+    for raw in (timeline_path, audio_path):
+        if not raw:
+            continue
+        path = Path(raw)
+        if path.is_file():
+            bases.append(path.parent.resolve())
+    seen: set[str] = set()
+    for base in bases:
+        key = str(base).lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        resolved = resolve_images_dir(base)
+        if count_valid_images(resolved)[0] > 0:
+            return resolved
+        for child in sorted(base.iterdir()):
+            if not child.is_dir():
+                continue
+            low = child.name.lower()
+            if not any(low.startswith(prefix) for prefix in _EXPORT_IMAGE_DIR_PREFIXES):
+                continue
+            if count_valid_images(child)[0] > 0:
+                return child.resolve()
+    return None
+
 # Hieu ung xfade phu hop video 2D (nhe, nhanh)
 TRANSITION_EFFECTS = {
     "fade": "Fade mượt",
@@ -1540,17 +1668,43 @@ def parse_scene_bracket_time(mm: str, sep: str, ss: str, frac: str | None = None
 
 
 SCENE_LINE_RE = re.compile(
-    r"^(\d{3})_\["
-    r"(\d{2}(?:\.\d{2}(?:\.\d{2}(?:\.\d{1,3})?)?|:\d{2}(?:\.\d{1,3})?)?)"
-    r"\s*[–-]\s*"
-    r"(\d{2}(?:\.\d{2}(?:\.\d{2}(?:\.\d{1,3})?)?|:\d{2}(?:\.\d{1,3})?)?)"
-    r"\]",
+    r"^(\d{3})_\[([^\]–-]+?)\s*[–-]\s*([^\]]+?)\]",
     re.IGNORECASE,
 )
 
 BRACKET_RANGE_RE = re.compile(
     r"\[(\d{2}:\d{2}(?:\.\d{1,3})?(?::\d{2})?)\s*[–-]\s*(\d{2}:\d{2}(?:\.\d{1,3})?(?::\d{2})?)\]",
 )
+
+SINGLE_TIMESTAMP_LINE_RE = re.compile(
+    r"^\[(\d{2}:\d{2}(?:\.\d{1,3})?(?::\d{2}(?:\.\d{1,3})?)?)\]",
+)
+
+
+def _scenes_from_single_timestamp_lines(lines: list[str], audio_duration: float) -> list[tuple[int, float, float]]:
+    """Mỗi dòng bắt đầu [HH:MM:SS.mmm] — end = mốc kế hoặc hết audio."""
+    marks: list[tuple[int, float]] = []
+    for raw in lines:
+        line = raw.strip()
+        if not line:
+            continue
+        match = SINGLE_TIMESTAMP_LINE_RE.match(line)
+        if not match:
+            continue
+        try:
+            start = parse_time_to_seconds(match.group(1))
+        except ValueError:
+            continue
+        marks.append((len(marks) + 1, start))
+    if not marks:
+        return []
+    duration = max(float(audio_duration or 0), marks[-1][1] + 0.5)
+    scenes: list[tuple[int, float, float]] = []
+    for index, (scene_num, start) in enumerate(marks):
+        end = marks[index + 1][1] if index + 1 < len(marks) else duration
+        if end > start:
+            scenes.append((scene_num, start, end))
+    return scenes
 
 
 def _format_time_short(seconds: float) -> str:
@@ -1595,6 +1749,18 @@ def format_missing_images_message(missing: list[int], scenes, images_dir: Path) 
         lines.append(f"  • Scene {num:03d}{tr}  →  {hint}")
     lines.append("")
     lines.append(f"Thư mục:\n{images_dir.resolve()}")
+    try:
+        valid, total = count_valid_images(images_dir)
+        invalid = total - valid
+        if invalid > 0 and len(missing) >= max(3, total // 4):
+            lines.append("")
+            lines.append(
+                f"Lưu ý: có {total} file .png/.jpg nhưng chỉ {valid} ảnh thật; "
+                f"{invalid} file lỗi (thường HTML khi bulk Gemini tải hỏng)."
+            )
+            lines.append("Hãy chọn thư mục veo-folder-* hoặc tải/xuất lại ảnh.")
+    except OSError:
+        pass
     return "\n".join(lines)
 
 
@@ -1689,29 +1855,46 @@ def parse_prompt_scenes(prompt_file: Path, audio_duration: float):
     if ranges:
         return [(i + 1, s, e) for i, (s, e) in enumerate(ranges)]
 
+    single = _scenes_from_single_timestamp_lines(lines, audio_duration)
+    if single:
+        return single
+
     raise RuntimeError("Không tìm thấy scene trong file prompt.")
 
 
-def scenes_to_timeline_pairs(scenes, images_dir: Path, total_duration: float):
+def scenes_to_timeline_pairs(
+    scenes,
+    images_dir: Path,
+    total_duration: float,
+    *,
+    skip_missing: bool = False,
+):
     """Map scene markers to contiguous absolute (image, start, end) on [0, total_duration]."""
     sorted_scenes = sorted(scenes, key=lambda x: (x[1], x[0]))
-    missing = find_missing_scene_images(sorted_scenes, images_dir)
-    if missing:
-        raise MissingSceneImagesError(missing, sorted_scenes, images_dir)
+    if not skip_missing:
+        missing = find_missing_scene_images(sorted_scenes, images_dir)
+        if missing:
+            raise MissingSceneImagesError(missing, sorted_scenes, images_dir)
 
     by_scene, references = index_images_by_scene(images_dir)
     pairs = []
     cursor = 0.0
 
     for scene_num, start, end in sorted_scenes:
-        img = resolve_scene_image(scene_num, by_scene, references)
-        if img is None:
-            raise MissingSceneImagesError([scene_num], sorted_scenes, images_dir)
-
         start = max(0.0, float(start))
         end = min(float(end), total_duration)
         if end <= start + 0.001:
             continue
+
+        img = resolve_scene_image(scene_num, by_scene, references)
+        if img is None:
+            if skip_missing:
+                if pairs:
+                    last_img, last_start, last_end = pairs[-1]
+                    pairs[-1] = (last_img, last_start, max(last_end, end))
+                    cursor = max(cursor, end)
+                continue
+            raise MissingSceneImagesError([scene_num], sorted_scenes, images_dir)
 
         if start < cursor - 0.001:
             start = cursor
@@ -1731,6 +1914,8 @@ def scenes_to_timeline_pairs(scenes, images_dir: Path, total_duration: float):
         cursor = end
 
     if not pairs:
+        if skip_missing:
+            raise RuntimeError("Không có scene nào có ảnh để ghép video.")
         raise RuntimeError("Không có scene nào để ghép.")
 
     if cursor < total_duration - 0.001:
@@ -1767,11 +1952,24 @@ def validate_contiguous_pairs(pairs, total_duration, log_callback=None):
 
 
 def list_images(images_dir: Path):
-    images_dir = Path(images_dir)
-    images = [p for p in images_dir.iterdir() if p.suffix.lower() in IMAGE_EXTS]
+    images_dir = Path(images_dir).resolve()
+    raw = _collect_image_files(images_dir)
+    images = [path for path in raw if is_valid_image_file(path)]
+    invalid = len(raw) - len(images)
     if not images:
-        images = [p for p in images_dir.rglob("*") if p.suffix.lower() in IMAGE_EXTS]
-    if not images:
+        if invalid:
+            sample = raw[0]
+            try:
+                size = sample.stat().st_size
+            except OSError:
+                size = 0
+            raise RuntimeError(
+                f"Thư mục có {invalid} file {', '.join(sorted(IMAGE_EXTS))} "
+                f"nhưng không phải ảnh hợp lệ.\n"
+                f"Ví dụ: {sample.name} ({size} byte) — thường là file lỗi/HTML khi bulk Gemini tải hỏng.\n"
+                f"Tải lại ảnh hoặc dùng thư mục veo-folder / ảnh .jpg thật.\n\n"
+                f"Thư mục:\n{images_dir.resolve()}"
+            )
         raise RuntimeError(f"Không tìm thấy ảnh trong thư mục: {images_dir}")
     return images
 
@@ -1779,13 +1977,19 @@ def list_images(images_dir: Path):
 def parse_image_scene_num(path: Path):
     """Nhận scene từ tên file: 001_..., số đầu tên, hoặc _N / -N ở cuối (bulk export)."""
     name = path.name
+    stem = path.stem
+    lower = name.lower()
+    if "bulk_img" in lower:
+        match = re.search(r"_(\d+)$", stem)
+        if match:
+            return int(match.group(1))
     match = re.match(r"^(\d{3})_", name)
     if match:
         return int(match.group(1))
     match = re.match(r"^(\d+)", name)
     if match:
         return int(match.group(1))
-    match = re.search(r"[_-](\d+)$", path.stem)
+    match = re.search(r"[_-](\d+)$", stem)
     if match:
         return int(match.group(1))
     return None
@@ -1796,8 +2000,10 @@ def is_reference_image(path: Path):
     return "CHARACTER REFERENCE" in upper or "CHARACTER-REFERENCE" in upper
 
 
-def build_scene_pairs(images_dir: Path, scenes, audio_duration: float):
-    return scenes_to_timeline_pairs(scenes, images_dir, audio_duration)
+def build_scene_pairs(images_dir: Path, scenes, audio_duration: float, *, skip_missing: bool = False):
+    return scenes_to_timeline_pairs(
+        scenes, images_dir, audio_duration, skip_missing=skip_missing,
+    )
 
 
 def detect_resolution_from_images(images_dir: Path) -> tuple[int, int]:
@@ -2055,6 +2261,7 @@ def build_video(
     preview_seconds=None,
     log_callback=None,
     process_controller=None,
+    skip_missing_images=False,
 ):
     audio = Path(audio)
     prompts = Path(prompts)
@@ -2096,9 +2303,20 @@ def build_video(
     report_progress(progress_callback, 2.0, "Đọc file prompt...")
     scenes = parse_prompt_scenes(prompts, output_duration)
     report_progress(progress_callback, 2.6, f"Map {len(scenes)} scene...")
-    pairs = build_scene_pairs(images_dir, scenes, output_duration)
+    pairs = build_scene_pairs(
+        images_dir, scenes, output_duration, skip_missing=skip_missing_images,
+    )
     report_progress(progress_callback, 3.2, "Kiểm tra ảnh...")
-    validate_scene_images(scenes, images_dir)
+    if not skip_missing_images:
+        validate_scene_images(scenes, images_dir)
+    elif pairs:
+        missing = find_missing_scene_images(scenes, images_dir)
+        if missing:
+            log_msg(
+                log_callback,
+                f"Bỏ qua {len(missing)} scene thiếu ảnh khi ghép timeline.",
+                "warn",
+            )
     timeline_span = validate_contiguous_pairs(pairs, output_duration, log_callback)
     report_progress(progress_callback, 3.8, f"Chuẩn bị {len(pairs)} scene...")
 

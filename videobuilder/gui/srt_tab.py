@@ -51,6 +51,7 @@ from videobuilder.core.pipeline import ProcessController
 from videobuilder.core.ffmpeg_setup import check_ffmpeg
 from videobuilder.core.pipeline import DEFAULT_PREVIEW_SECONDS
 from videobuilder.gui.constants import C, SRT_FIELD_LABEL_WIDTH, SRT_LANGUAGE_OPTIONS
+from videobuilder.core.path_checks import path_exists_or_assume
 from videobuilder.gui.paths import default_output_folder, is_writable_output_dir
 
 
@@ -432,12 +433,12 @@ class SrtTabMixin:
             else:
                 srt_target = self.last_srt_output or self.srt_output_var.get().strip()
                 prompts_target = self.last_prompts_output or self.srt_prompts_output_var.get().strip()
-            srt_ok = bool(srt_target and Path(srt_target).is_file())
-            prompts_ok = bool(prompts_target and Path(prompts_target).is_file())
+            srt_ok = bool(srt_target and path_exists_or_assume(srt_target, is_dir=False))
+            prompts_ok = bool(prompts_target and path_exists_or_assume(prompts_target, is_dir=False))
             folder_ok = srt_ok or prompts_ok
             if mode == "auto" and not folder_ok:
                 auto_dir = self.auto_output_dir_var.get().strip()
-                folder_ok = bool(auto_dir and Path(auto_dir).is_dir())
+                folder_ok = bool(auto_dir and path_exists_or_assume(auto_dir, is_dir=True))
             state_srt = tk.NORMAL if srt_ok else tk.DISABLED
             self.open_video_btn.configure(state=state_srt)
             self.open_folder_btn.configure(state=tk.NORMAL if folder_ok else tk.DISABLED)
@@ -461,20 +462,17 @@ class SrtTabMixin:
             self._sync_exports_from_audio(audio)
 
         def _ensure_srt_packages_auto(self):
-            """Tự cài groq + faster-whisper lần đầu mở tab SRT."""
+            """Tự cài groq + faster-whisper lần đầu mở tab SRT (không chặn UI)."""
             if self.whisper_installing or getattr(self, "_srt_packages_auto_started", False):
                 return
             if not srt_packages_status()["needs_install"]:
                 return
             self._srt_packages_auto_started = True
-            self._install_srt_packages()
+            self.after(100, self._install_srt_packages)
 
-        def _refresh_srt_engine_status(self):
+        def _apply_srt_engine_status(self, status: dict, model: str):
             if not self._srt_whisper_btn_frame:
                 return
-            model = self.srt_model_var.get().strip() or DEFAULT_MODEL
-            groq_lang = "" if (self.srt_language_var.get().strip() or "auto") == "auto" else self.srt_language_var.get().strip()
-            status = check_whisper(model, language=groq_lang)
             self.whisper_ok = status["ok"]
             self.whisper_status_var.set(self._format_srt_engine_status(status, model))
 
@@ -510,7 +508,7 @@ class SrtTabMixin:
                     self.srt_recheck_btn.pack(side=tk.LEFT)
                     self.srt_recheck_btn.configure(
                         text="Kiểm tra",
-                        command=self._refresh_srt_engine_status,
+                        command=self._schedule_srt_tab_refresh,
                         width=9,
                     )
             else:
@@ -520,13 +518,46 @@ class SrtTabMixin:
                     self.srt_recheck_btn.pack(side=tk.LEFT)
                     self.srt_recheck_btn.configure(
                         text="Kiểm tra",
-                        command=self._refresh_srt_engine_status,
+                        command=self._schedule_srt_tab_refresh,
                         width=9,
                     )
 
             self._srt_whisper_inner.configure(bg=bg)
             self._srt_whisper_msg.configure(bg=bg, fg=fg)
             self._update_srt_controls_locked()
+
+        def _schedule_srt_tab_refresh(self):
+            """check_whisper chạy nền — tránh import faster-whisper trên UI thread."""
+            if getattr(self, "_srt_tab_refreshing", False):
+                return
+            if not self._srt_whisper_btn_frame:
+                return
+            self._srt_tab_refreshing = True
+            model = self.srt_model_var.get().strip() or DEFAULT_MODEL
+            groq_lang = "" if (self.srt_language_var.get().strip() or "auto") == "auto" else self.srt_language_var.get().strip()
+
+            def worker():
+                try:
+                    status = check_whisper(model, language=groq_lang)
+                except Exception as err:
+                    status = {
+                        "ok": False,
+                        "groq": False,
+                        "local_ok": False,
+                        "needs_install": True,
+                        "message": str(err),
+                    }
+
+                def done():
+                    self._srt_tab_refreshing = False
+                    self._apply_srt_engine_status(status, model)
+
+                self._run_on_ui_thread(done)
+
+            threading.Thread(target=worker, daemon=True).start()
+
+        def _refresh_srt_engine_status(self):
+            self._schedule_srt_tab_refresh()
 
         def _refresh_whisper_status(self):
             self._refresh_srt_engine_status()
@@ -561,7 +592,6 @@ class SrtTabMixin:
             self.whisper_status_var.set("Đang cài gói nhận dạng (Groq + Whisper)...")
             self._update_srt_status("Đang cài đặt...")
             self._log("Đang cài gói nhận dạng (Groq + Whisper)...", "info")
-            self._set_srt_running(True)
 
             def worker():
                 try:
@@ -574,7 +604,6 @@ class SrtTabMixin:
 
                 def done():
                     self.whisper_installing = False
-                    self._set_srt_running(False)
                     if self._srt_whisper_btn_frame:
                         self.srt_install_btn.configure(state=tk.NORMAL, text="Cài đặt")
                     self._refresh_srt_engine_status()
@@ -587,7 +616,7 @@ class SrtTabMixin:
                         self._show_error("Cài đặt", msg)
                     self._log(msg, level)
 
-                self.after(0, done)
+                self._run_on_ui_thread(done)
 
             threading.Thread(target=worker, daemon=True).start()
 
@@ -657,7 +686,7 @@ class SrtTabMixin:
                         self._show_info("Xong", f"Đã tải model Whisper {model}.")
                     self._sync_srt_model_hint()
 
-                self.after(0, done)
+                self._run_on_ui_thread(done)
 
             self.srt_paused = False
             self.process_controller = ProcessController()
@@ -675,7 +704,7 @@ class SrtTabMixin:
                     return
                 self._srt_tracker.report(float(pct), message or "")
 
-            self.after(0, update)
+            self._run_on_ui_thread(update)
 
         def _set_srt_running(self, active: bool):
             self.srt_running = active
@@ -926,7 +955,7 @@ class SrtTabMixin:
                             self._sync_prompts_display(from_output_var=True)
                         self._save_settings()
 
-                self.after(0, done)
+                self._run_on_ui_thread(done)
 
             threading.Thread(target=worker, daemon=True).start()
 

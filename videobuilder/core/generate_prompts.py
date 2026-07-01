@@ -343,15 +343,27 @@ def parse_prompt_timecode_token(token: str) -> float:
     nums = [int(p) for p in parts]
     if len(nums) == 3:
         a, b, c = nums
+        frac_len = len(parts[2])
+        frac = c / (10 ** frac_len)
         if a == 0 and b == 0:
+            if frac_len >= 3:
+                return float(frac)
             return float(c)
+        if a == 0:
+            if frac_len >= 3:
+                return float(b) + frac
+            if c == 0:
+                return float(b * 60)
+            if c >= 60:
+                return float(b) + frac
+            return float(b * 60 + c)
+        if frac_len >= 3:
+            return float(a * 60 + b) + frac
         if c == 0:
-            return float(b * 60)
+            return float(a * 60 + b)
         if c >= 60:
-            # Legacy: 00.10.80 → 10.8 giây (phần thập phân ≥ 60)
-            return float(b) + c / (10 ** len(parts[2]))
-        # 00.MM.SS — ví dụ 00.01.30 = 1 phút 30 giây
-        return float(b * 60 + c)
+            return float(a * 60 + b) + frac
+        return float(a * 60 + b * 60 + c)
     if len(nums) == 4:
         a, b, c, d = nums
         frac = d / (10 ** len(parts[3]))
@@ -2147,7 +2159,9 @@ def write_image_prompts_txt(beats: list[VisualBeat], output: Path) -> Path:
 
 
 def default_prompts_path(audio_path: Path) -> Path:
-    return Path(audio_path).with_suffix(".txt")
+    from videobuilder.core.timeline_paths import default_timeline_path
+
+    return default_timeline_path(audio_path)
 
 
 def generate_image_prompts_from_segments(

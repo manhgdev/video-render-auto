@@ -87,6 +87,20 @@ class TestParsePromptScenes:
         assert len(scenes) == 1
         assert scenes[0][0] == 2
 
+    def test_single_timestamp_lines(self, tmp_path: Path):
+        text = (
+            "[00:00:00.110] scene one\n"
+            "[00:00:02.630] scene two\n"
+            "[00:00:10.210] scene three\n"
+        )
+        path = tmp_path / "timeline.txt"
+        path.write_text(text, encoding="utf-8")
+        scenes = parse_prompt_scenes(path, 12.0)
+        assert len(scenes) == 3
+        assert scenes[0] == (1, pytest.approx(0.11), pytest.approx(2.63))
+        assert scenes[1] == (2, pytest.approx(2.63), pytest.approx(10.21))
+        assert scenes[2] == (3, pytest.approx(10.21), 12.0)
+
 
 class TestParseImageSceneNum:
     def test_standard_prefix(self, tmp_path: Path):
@@ -107,11 +121,36 @@ class TestParseImageSceneNum:
         scenes = parse_prompt_scenes(prompts, 60.0)
         images_dir = tmp_path / "images"
         images_dir.mkdir()
-        (images_dir / "Bulk_img_gen_00_52_1-07-2026_1.png").write_bytes(b"x")
-        (images_dir / "Bulk_img_gen_00_52_1-07-2026_2.png").write_bytes(b"x")
+        (images_dir / "Bulk_img_gen_00_52_1-07-2026_1.png").write_bytes(b"\xff\xd8\xff\xe0" + b"\x00" * 8)
+        (images_dir / "Bulk_img_gen_00_52_1-07-2026_2.png").write_bytes(b"\xff\xd8\xff\xe0" + b"\x00" * 8)
 
         validate_scene_images(scenes, images_dir)
         by_scene, _refs = index_images_by_scene(images_dir)
         assert by_scene[1].name.endswith("_1.png")
         assert by_scene[2].name.endswith("_2.png")
         assert find_missing_scene_images(scenes, images_dir) == []
+
+
+class TestVeoMmSsMmmFormat:
+    """VEO export: 001_[00.00.000-00.13.720] — MM.SS.mmm với mili 3 chữ số."""
+
+    def test_parse_timecode_tokens(self):
+        from videobuilder.core.generate_prompts import parse_prompt_timecode_token
+
+        assert parse_prompt_timecode_token("00.00.000") == 0.0
+        assert parse_prompt_timecode_token("00.13.720") == pytest.approx(13.72)
+        assert parse_prompt_timecode_token("00.51.022") == pytest.approx(51.022)
+        assert parse_prompt_timecode_token("01.04.662") == pytest.approx(64.662)
+
+    def test_parse_veo_scene_lines(self, tmp_path: Path):
+        text = (
+            "001_[00.00.000-00.13.720] Scene one prompt\n"
+            "\n"
+            "002_[00.13.720-00.26.272] Scene two prompt\n"
+        )
+        path = tmp_path / "image_prompts_ww2.txt"
+        path.write_text(text, encoding="utf-8")
+        scenes = parse_prompt_scenes(path, 9999.0)
+        assert len(scenes) == 2
+        assert scenes[0] == (1, 0.0, pytest.approx(13.72))
+        assert scenes[1] == (2, pytest.approx(13.72), pytest.approx(26.272))

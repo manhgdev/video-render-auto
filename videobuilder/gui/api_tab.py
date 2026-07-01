@@ -164,6 +164,30 @@ class ApiTabMixin:
             if not silent:
                 self._save_settings()
 
+        def _hydrate_api_keys_from_env(self):
+            """Điền ô API key từ .env khi UI/settings trống."""
+            from videobuilder.core.automation import invalidate_auto_packages_cache
+            from videobuilder.core.env_config import GEMINI_API_KEY_ENV, GROQ_API_KEY_ENV, env_api_key, load_env
+            from videobuilder.core.generate_images import apply_env_gemini_key, set_gemini_api_key
+
+            load_env()
+            if not self.groq_api_key_var.get().strip():
+                key = env_api_key(GROQ_API_KEY_ENV)
+                if key:
+                    self.groq_api_key_var.set(key)
+            if not self.gemini_api_key_var.get().strip():
+                key = env_api_key(GEMINI_API_KEY_ENV)
+                if key:
+                    self.gemini_api_key_var.set(key)
+            self._apply_groq_api_key(silent=True)
+            set_gemini_api_key(self.gemini_api_key_var.get())
+            apply_env_gemini_key()
+            invalidate_auto_packages_cache()
+            if getattr(self, "groq_api_status_var", None) is not None:
+                self._refresh_groq_api_status()
+            if getattr(self, "gemini_api_status_var", None) is not None:
+                self._refresh_gemini_api_status()
+
         def _clear_gemini_api_key(self):
             self.gemini_api_key_var.set("")
             self._apply_gemini_api_key()

@@ -18,6 +18,7 @@ from videobuilder.core.generate_images import (
 )
 from videobuilder.core.pipeline import ProcessController, RenderCancelled
 from videobuilder.core.progress import reset_progress_floor
+from videobuilder.core.timeline_paths import resolve_timeline_path
 from videobuilder.gui.constants import C
 from videobuilder.gui.paths import default_output_folder, is_writable_output_dir
 
@@ -73,8 +74,16 @@ class ImageTabMixin:
                 self.img_output_dir_var.set(self._format_output_dir(path))
                 self._save_settings()
 
+        def _resolve_img_prompts_path(self, configured: str = "") -> str | None:
+            text = (configured or self.img_prompts_var.get().strip() or self.prompts_var.get().strip())
+            resolved = resolve_timeline_path(
+                text or None,
+                audio_path=self.audio_var.get().strip() or None,
+            )
+            return str(resolved) if resolved is not None else (text or None)
+
         def _use_project_paths_for_image(self):
-            prompts = self.prompts_var.get().strip()
+            prompts = self._resolve_img_prompts_path(self.prompts_var.get().strip())
             images = self.images_var.get().strip()
             if prompts and Path(prompts).is_file():
                 self.img_prompts_var.set(prompts)
@@ -131,7 +140,7 @@ class ImageTabMixin:
                         self._show_info("Xong", "Đã cài google-genai.")
                         self._log("Đã cài google-genai.", "success")
 
-                self.after(0, done)
+                self._run_on_ui_thread(done)
 
             threading.Thread(target=worker, daemon=True).start()
 
@@ -176,7 +185,7 @@ class ImageTabMixin:
             mode = getattr(self, "_footer_mode", "render")
             if mode != "image":
                 return
-            prompts_target = self.img_prompts_var.get().strip() or self.prompts_var.get().strip()
+            prompts_target = self._resolve_img_prompts_path() or ""
             img_dir = self.img_output_dir_var.get().strip() or self.images_var.get().strip()
             prompts_ok = bool(prompts_target and Path(prompts_target).is_file())
             folder_ok = bool(img_dir and Path(img_dir).exists())
@@ -194,10 +203,10 @@ class ImageTabMixin:
                 self._show_warning("Đang bận", busy)
                 return
 
-            prompts = self.img_prompts_var.get().strip()
+            prompts = self._resolve_img_prompts_path() or ""
             images_dir = self.img_output_dir_var.get().strip()
             if not prompts or not Path(prompts).is_file():
-                self._show_warning("Thiếu file prompt", "Chọn file prompt tạo ảnh (.txt).")
+                self._show_warning("Thiếu file timeline", "Chọn file timeline tạo ảnh (.txt).")
                 return
             if not images_dir:
                 self._show_warning("Thiếu thư mục", "Chọn thư mục lưu ảnh scene.")
@@ -288,7 +297,7 @@ class ImageTabMixin:
                     self._update_img_open_buttons()
                     self._update_render_control_buttons()
 
-                self.after(0, done)
+                self._run_on_ui_thread(done)
 
             threading.Thread(target=worker, daemon=True).start()
 

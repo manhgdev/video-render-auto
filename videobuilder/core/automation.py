@@ -5,10 +5,12 @@
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import json
 import re
 import subprocess
 import sys
+import threading
 import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,13 +19,17 @@ from typing import Any
 from videobuilder.core.audio_pipeline import apply_env_api_keys, run_audio_pipeline
 from videobuilder.core.create_srt import DEFAULT_LANGUAGE, DEFAULT_SRT_SPLIT, groq_api_key, groq_client_available
 from videobuilder.core.env_config import GROQ_API_KEY_ENV
-from videobuilder.core.ffmpeg_setup import get_app_dir
+from videobuilder.core.ffmpeg_setup import get_app_dir, get_bundle_dir, is_frozen_app
 from videobuilder.core.generate_prompts import GeneratePromptsError
 from videobuilder.core.groq_models import groq_llm_model_chain, load_cached_groq_models
 from videobuilder.core.progress import report_progress
+from videobuilder.core.timeline_paths import timeline_filename
 
-DEFAULT_AUTOMATION_PROMPT = get_app_dir() / "template" / "v1-base-vietnam-2D.txt"
-FALLBACK_AUTOMATION_PROMPT = get_app_dir() / "public" / "templates" / "automation_prompt_template.txt"
+BUNDLED_AUTOMATION_PROMPT = get_bundle_dir() / "template" / "v1-base-vietnam-2D.txt"
+BUNDLED_FALLBACK_PROMPT = get_bundle_dir() / "public" / "templates" / "automation_prompt_template.txt"
+USER_AUTOMATION_PROMPT = get_app_dir() / "public" / "templates" / "automation_prompt_template.txt"
+DEFAULT_AUTOMATION_PROMPT = BUNDLED_AUTOMATION_PROMPT
+FALLBACK_AUTOMATION_PROMPT = USER_AUTOMATION_PROMPT
 DEFAULT_TTS_VOICE = "vi-VN-HoaiMyNeural"
 DEFAULT_TTS_RATE = "+0%"
 TTS_VOICE_OPTIONS: tuple[str, ...] = (
@@ -60,13 +66,126 @@ Yêu cầu prompt ảnh:
 """
 
 
+_default_prompt_path_cached: Path | None = None
+
+
+def automation_prompt_path_hint() -> Path:
+    """Path prompt mặc định — không tạo/ghi file (dùng khi khởi tạo UI)."""
+    global _default_prompt_path_cached
+    if _default_prompt_path_cached is not None:
+        return _default_prompt_path_cached
+    _default_prompt_path_cached = USER_AUTOMATION_PROMPT
+    return _default_prompt_path_cached
+
+
 def ensure_default_automation_prompt() -> Path:
-    if DEFAULT_AUTOMATION_PROMPT.is_file():
-        return DEFAULT_AUTOMATION_PROMPT
-    FALLBACK_AUTOMATION_PROMPT.parent.mkdir(parents=True, exist_ok=True)
-    if not FALLBACK_AUTOMATION_PROMPT.is_file():
-        FALLBACK_AUTOMATION_PROMPT.write_text(DEFAULT_AUTOMATION_PROMPT_TEXT, encoding="utf-8")
-    return FALLBACK_AUTOMATION_PROMPT
+    """Path prompt mặc định ổn định (không lưu _MEIPASS vào settings)."""
+    global _default_prompt_path_cached
+    if USER_AUTOMATION_PROMPT.is_file():
+        _default_prompt_path_cached = USER_AUTOMATION_PROMPT
+        return USER_AUTOMATION_PROMPT
+    source = BUNDLED_AUTOMATION_PROMPT if BUNDLED_AUTOMATION_PROMPT.is_file() else BUNDLED_FALLBACK_PROMPT
+    USER_AUTOMATION_PROMPT.parent.mkdir(parents=True, exist_ok=True)
+    if source.is_file():
+        USER_AUTOMATION_PROMPT.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+    else:
+        USER_AUTOMATION_PROMPT.write_text(DEFAULT_AUTOMATION_PROMPT_TEXT, encoding="utf-8")
+    _default_prompt_path_cached = USER_AUTOMATION_PROMPT
+    return USER_AUTOMATION_PROMPT
+
+
+_AUTO_PACKAGE_MODULES = {
+    "groq": "groq",
+    "edge-tts": "edge_tts",
+    "yt-dlp": "yt_dlp",
+}
+
+
+def _auto_package_installed(dist_name: str) -> bool:
+    module = _AUTO_PACKAGE_MODULES.get(dist_name, dist_name.replace("-", "_"))
+    return importlib.util.find_spec(module) is not None
+
+
+_auto_packages_cache: dict | None = None
+
+
+def invalidate_auto_packages_cache() -> None:
+    global _auto_packages_cache
+    _auto_packages_cache = None
+
+
+def auto_packages_status(*, force: bool = False) -> dict:
+    """Kiểm tra nhanh gói tab Tự động — chỉ find_spec, không import nặng."""
+    global _auto_packages_cache
+    if not force and _auto_packages_cache is not None:
+        return _auto_packages_cache
+
+    from videobuilder.core.create_srt import groq_api_key
+
+    groq_key = bool(groq_api_key())
+    groq_ok = _auto_package_installed("groq")
+    edge_ok = _auto_package_installed("edge-tts")
+    ytdlp_ok = _auto_package_installed("yt-dlp")
+    missing: list[str] = []
+    if not groq_ok:
+        missing.append("groq")
+    if not edge_ok:
+        missing.append("edge-tts")
+    if not ytdlp_ok:
+        missing.append("yt-dlp")
+    _auto_packages_cache = {
+        "groq_key": groq_key,
+        "groq_ok": groq_ok,
+        "edge_tts_ok": edge_ok,
+        "yt_dlp_ok": ytdlp_ok,
+        "missing": missing,
+        "needs_install": bool(missing),
+        "ready_for_topics": groq_key and groq_ok,
+        "ready_for_pipeline": groq_key and groq_ok and edge_ok,
+        "ready_for_youtube": groq_key and groq_ok and ytdlp_ok,
+    }
+    return _auto_packages_cache
+
+
+def warmup_auto_defaults() -> None:
+    """Cache path/output/gói sau khi UI đã hiện — chạy nền, không block main thread."""
+
+    def work() -> None:
+        try:
+            ensure_default_automation_prompt()
+            _default_auto_output_folder()
+            auto_packages_status(force=True)
+        except Exception:
+            pass
+
+    threading.Thread(target=work, daemon=True).start()
+
+
+def install_auto_packages(*, log_callback=None) -> None:
+    """Cài groq + edge-tts + yt-dlp khi user bấm Cài đặt."""
+    if is_frozen_app():
+        raise AutomationError(
+            "Bản .exe không cài pip được. Build lại app hoặc chạy bản dev: pip install groq edge-tts yt-dlp"
+        )
+    missing = auto_packages_status()["missing"]
+    if not missing:
+        return
+    pip_names = [name for name in missing if name in _AUTO_PACKAGE_MODULES]
+    if not pip_names:
+        return
+    if log_callback:
+        log_callback(f"Đang cài: {', '.join(pip_names)}...", "info")
+    try:
+        subprocess.check_call([sys.executable, "-m", "pip", "install", *pip_names])
+    except subprocess.CalledProcessError as err:
+        raise AutomationError(
+            f"Không cài được gói ({', '.join(pip_names)}). Chạy thủ công: pip install {' '.join(pip_names)}"
+        ) from err
+    invalidate_auto_packages_cache()
+    still_missing = auto_packages_status(force=True)["missing"]
+    if still_missing:
+        raise AutomationError(f"Vẫn thiếu: {', '.join(still_missing)}")
+
 
 TOOL_PRODUCTION_PROMPT = """
 Bạn là engine sản xuất video YouTube audio-first chạy trong app desktop VideoBuilder.
@@ -179,17 +298,25 @@ def discover_existing_topic_hints(output_dir: str | Path | None) -> list[str]:
     return filter_unique_topics(hints)
 
 
+_default_auto_output_cached: Path | None = None
+
+
 def _default_auto_output_folder() -> Path:
+    global _default_auto_output_cached
+    if _default_auto_output_cached is not None and _default_auto_output_cached.is_dir():
+        return _default_auto_output_cached
     for folder in (get_app_dir() / "public" / "auto", Path.home() / "Downloads", Path.home() / "Videos", Path.home() / "Desktop"):
         try:
             folder.mkdir(parents=True, exist_ok=True)
             probe = folder / "._vb_write_test"
             probe.write_text("", encoding="utf-8")
             probe.unlink(missing_ok=True)
-            return folder.resolve()
+            _default_auto_output_cached = folder.resolve()
+            return _default_auto_output_cached
         except OSError:
             continue
-    return Path.home() / "Desktop"
+    _default_auto_output_cached = (Path.home() / "Desktop").resolve()
+    return _default_auto_output_cached
 
 
 def _ensure_groq_llm_ready() -> str:
@@ -368,6 +495,10 @@ def check_edge_tts_available() -> bool:
 def ensure_edge_tts_available(*, auto_install: bool = True, log_callback=None) -> None:
     if check_edge_tts_available():
         return
+    if is_frozen_app():
+        raise AutomationError(
+            "Thiếu edge-tts trong bản .exe. Cập nhật VideoBuilder hoặc chạy bản dev: pip install edge-tts"
+        )
     if not auto_install:
         raise AutomationError("Chưa cài edge-tts để tạo audio.mp3. Chạy: pip install edge-tts")
     if log_callback:
@@ -445,7 +576,7 @@ def run_full_auto_pipeline(
         progress_callback=_scaled_progress(progress_callback, 35, 15),
     )
     srt = script.with_name("subtitle.srt")
-    prompts = script.with_name(f"image_prompts_{slugify_topic(topic)}.txt")
+    prompts = script.with_name(timeline_filename(slugify_topic(topic)))
     try:
         srt_path, prompts_path = run_audio_pipeline(
             audio,

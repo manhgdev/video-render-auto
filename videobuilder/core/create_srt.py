@@ -1085,6 +1085,45 @@ def _check_local_whisper(model: str | None = None) -> dict:
 def check_whisper(model: str | None = None, *, language: str = "") -> dict:
     """Trạng thái nhận dạng SRT: Groq trước, faster-whisper fallback."""
     local = _check_local_whisper(model)
+    return _check_whisper_from_local(local, language=language)
+
+
+def check_whisper_light(*, language: str = "") -> dict:
+    """Kiểm tra nhanh Groq/gói — không import faster-whisper (tránh đơ UI)."""
+    pkg = srt_packages_status()
+    key = groq_api_key()
+    groq_lib = pkg["groq_ok"]
+    needs_install = pkg["needs_install"]
+    if key and groq_lib:
+        load_cached_groq_models()
+        return {
+            "ok": True,
+            "groq": True,
+            "local_ok": False,
+            "needs_install": needs_install,
+            "model_cached": None,
+            "message": f"Groq STT {groq_whisper_chain_label(language)} · free tier",
+        }
+    if key and not groq_lib:
+        return {
+            "ok": False,
+            "groq": False,
+            "local_ok": False,
+            "needs_install": True,
+            "model_cached": None,
+            "message": "Có API key Groq — cần cài gói nhận dạng",
+        }
+    return {
+        "ok": False,
+        "groq": False,
+        "local_ok": False,
+        "needs_install": True,
+        "model_cached": None,
+        "message": "Nhập API key Groq ở tab API key.",
+    }
+
+
+def _check_whisper_from_local(local: dict, *, language: str = "") -> dict:
     pkg = srt_packages_status()
     key = groq_api_key()
     groq_lib = pkg["groq_ok"]

@@ -17,8 +17,11 @@ from videobuilder.core.pipeline import (
     ProcessController,
     RenderCancelled,
     SCENE_LINE_RE,
+    SINGLE_TIMESTAMP_LINE_RE,
     is_reference_image,
+    is_valid_image_file,
     parse_image_scene_num,
+    parse_time_to_seconds,
 )
 from videobuilder.core.progress import report_progress, reset_progress_floor
 
@@ -151,30 +154,52 @@ def parse_prompt_entries(prompt_file: Path) -> list[PromptImageEntry]:
     entries: list[PromptImageEntry] = []
     from videobuilder.core.generate_prompts import parse_prompt_timecode_token
 
-    for raw in prompt_file.read_text(encoding="utf-8", errors="ignore").splitlines():
+    lines = prompt_file.read_text(encoding="utf-8", errors="ignore").splitlines()
+    raw_entries: list[tuple[int, float, str]] = []
+    for raw in lines:
         line = raw.strip()
         if not line:
             continue
         if re.match(r"^\d{3}_\[CHARACTER\s+REFERENCE\]", line, re.I):
             continue
         match = SCENE_LINE_RE.match(line)
-        if not match:
+        if match:
+            scene_num = int(match.group(1))
+            start = parse_prompt_timecode_token(match.group(2))
+            end = parse_prompt_timecode_token(match.group(3))
+            if end <= start:
+                end = start + 0.5
+            raw_entries.append((scene_num, start, line))
+            entries.append(
+                PromptImageEntry(scene_num=scene_num, start=start, end=end, line=line)
+            )
             continue
-        scene_num = int(match.group(1))
-        start = parse_prompt_timecode_token(match.group(2))
-        end = parse_prompt_timecode_token(match.group(3))
-        if end <= start:
-            end = start + 0.5
-        entries.append(
-            PromptImageEntry(scene_num=scene_num, start=start, end=end, line=line)
-        )
+        single = SINGLE_TIMESTAMP_LINE_RE.match(line)
+        if single:
+            try:
+                start = parse_time_to_seconds(single.group(1))
+            except ValueError:
+                continue
+            scene_num = len(raw_entries) + 1
+            raw_entries.append((scene_num, start, line))
 
-    if not entries:
-        raise GenerateImagesError(
-            "Không tìm thấy dòng prompt hợp lệ (định dạng 001_[00.00.00-00.00.01.92] ...)."
-        )
-    entries.sort(key=lambda item: (item.scene_num, item.start))
-    return entries
+    if raw_entries and not entries:
+        duration = raw_entries[-1][1] + 0.5
+        for index, (scene_num, start, line) in enumerate(raw_entries):
+            end = raw_entries[index + 1][1] if index + 1 < len(raw_entries) else duration
+            if end <= start:
+                end = start + 0.5
+            entries.append(
+                PromptImageEntry(scene_num=scene_num, start=start, end=end, line=line)
+            )
+
+    if entries:
+        entries.sort(key=lambda item: (item.scene_num, item.start))
+        return entries
+
+    raise GenerateImagesError(
+        "Không tìm thấy dòng prompt hợp lệ (001_[...] hoặc [HH:MM:SS] ...)."
+    )
 
 
 def image_output_path(entry: PromptImageEntry, images_dir: Path) -> Path:
@@ -207,6 +232,7 @@ def _list_scene_images(images_dir: Path) -> list[Path]:
             p for p in images_dir.rglob("*")
             if p.is_file() and p.suffix.lower() in IMAGE_EXTS
         ]
+    images = [p for p in images if is_valid_image_file(p)]
     return images
 
 
@@ -349,6 +375,8 @@ def generate_images_from_prompts(
     skip_existing: bool = True,
     scene_from: int | None = None,
     scene_to: int | None = None,
+    scene_nums: list[int] | None = None,
+    skip_errors: bool = False,
     api_key: str | None = None,
     progress_callback=None,
     log_callback=None,
@@ -370,6 +398,9 @@ def generate_images_from_prompts(
     out_dir.mkdir(parents=True, exist_ok=True)
 
     entries = parse_prompt_entries(prompt_path)
+    if scene_nums is not None:
+        wanted = {int(n) for n in scene_nums}
+        entries = [e for e in entries if e.scene_num in wanted]
     if scene_from is not None:
         entries = [e for e in entries if e.scene_num >= scene_from]
     if scene_to is not None:
@@ -411,6 +442,9 @@ def generate_images_from_prompts(
                 raise CreateSrtCancelled(str(err)) from err
 
         if gemini_quota_exhausted:
+            if skip_errors:
+                _log(log_callback, f"Bỏ qua scene {entry.scene_num:03d} — Gemini hết quota.", "warn")
+                continue
             raise GenerateImagesError(
                 "Gemini hết quota — dừng batch (các scene sau cũng sẽ lỗi tương tự)."
             )
@@ -430,9 +464,18 @@ def generate_images_from_prompts(
         except GenerateImagesError as err:
             if _is_quota_error(err):
                 gemini_quota_exhausted = True
+            if skip_errors:
+                _log(log_callback, f"✗ Scene {entry.scene_num:03d}: {err}", "warn")
+                continue
             raise
 
-        _save_generated_part(part, dest)
+        try:
+            _save_generated_part(part, dest)
+        except GenerateImagesError as err:
+            if skip_errors:
+                _log(log_callback, f"✗ Scene {entry.scene_num:03d}: {err}", "warn")
+                continue
+            raise
         saved.append(dest)
         _log(log_callback, f"✓ Scene {entry.scene_num:03d} ({model})", "success")
 
