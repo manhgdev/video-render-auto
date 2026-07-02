@@ -340,8 +340,17 @@ def resolve_images_dir(path: str | Path, scenes=None) -> Path:
     except OSError:
         pass
 
+    export_children = {
+        child.resolve()
+        for child in base.iterdir()
+        if child.is_dir()
+        and any(child.name.lower().startswith(prefix) for prefix in _EXPORT_IMAGE_DIR_PREFIXES)
+    }
+
     def folder_stats(folder: Path) -> tuple[int, int, int]:
-        valid, total = count_valid_images(folder)
+        # Folder cha không gom ảnh từ gemini-folder/veo-folder con — chúng là ứng viên riêng.
+        recursive = not (folder == base and export_children)
+        valid, total = count_valid_images(folder, recursive=recursive)
         missing = len(find_missing_scene_images(scenes, folder)) if scenes else 0
         return missing, total - valid, -valid
 
@@ -356,7 +365,7 @@ def resolve_images_dir(path: str | Path, scenes=None) -> Path:
             best_stats = stats
 
     if best != base:
-        base_valid, base_total = count_valid_images(base)
+        base_valid, base_total = count_valid_images(base, recursive=not export_children)
         base_miss = folder_stats(base)[0]
         if scenes:
             if best_stats[0] < base_miss:

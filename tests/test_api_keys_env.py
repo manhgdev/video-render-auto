@@ -3,7 +3,10 @@ from pathlib import Path
 
 import pytest
 
+from tests._tk_skip import requires_tk
 
+
+@requires_tk
 def test_hydrate_api_keys_from_env(tmp_path: Path, monkeypatch):
     env_file = tmp_path / ".env"
     env_file.write_text(

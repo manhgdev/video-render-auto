@@ -7,6 +7,8 @@ import time
 
 import pytest
 
+from tests._tk_skip import requires_tk
+
 
 def test_check_whisper_light_does_not_import_faster_whisper(monkeypatch):
     from videobuilder.core import create_srt as cs
@@ -26,6 +28,7 @@ def test_check_whisper_light_does_not_import_faster_whisper(monkeypatch):
     assert status["groq"] is True
 
 
+@requires_tk
 def test_run_on_ui_thread_from_worker():
     import tkinter as tk
 
@@ -60,6 +63,7 @@ def test_run_on_ui_thread_from_worker():
     assert result == ["ok"]
 
 
+@requires_tk
 def test_auto_tab_switch_is_fast():
     import time
     import tkinter as tk
