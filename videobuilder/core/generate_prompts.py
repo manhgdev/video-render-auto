@@ -326,74 +326,17 @@ def validate_transcript_for_prompts(
 
 
 def parse_prompt_timecode_token(token: str) -> float:
-    """Đọc timecode trong [00.00.01.92] — chuẩn file tạo ảnh (hỗ trợ legacy 00.10.80, 00:06.33)."""
-    text = (token or "").strip()
-    colon = re.match(r"^(\d{2}):(\d{2})(?:\.(\d{1,3}))?$", text)
-    if colon:
-        base = int(colon.group(1)) * 60 + int(colon.group(2))
-        frac = colon.group(3)
-        if frac:
-            base += int(frac) / (10 ** len(frac))
-        return float(base)
-    parts = [p.strip() for p in text.split(".") if p.strip()]
-    if len(parts) == 2:
-        return float(int(parts[0]) * 60 + int(parts[1]))
-    if len(parts) < 3:
-        raise ValueError(f"timecode không hợp lệ: {token}")
-    nums = [int(p) for p in parts]
-    if len(nums) == 3:
-        a, b, c = nums
-        frac_len = len(parts[2])
-        frac = c / (10 ** frac_len)
-        if a == 0 and b == 0:
-            if frac_len >= 3:
-                return float(frac)
-            return float(c)
-        if a == 0:
-            if frac_len >= 3:
-                return float(b) + frac
-            if c == 0:
-                return float(b * 60)
-            if c >= 60:
-                return float(b) + frac
-            return float(b * 60 + c)
-        if frac_len >= 3:
-            return float(a * 60 + b) + frac
-        if c == 0:
-            return float(a * 60 + b)
-        if c >= 60:
-            return float(a * 60 + b) + frac
-        return float(a * 60 + b * 60 + c)
-    if len(nums) == 4:
-        a, b, c, d = nums
-        frac = d / (10 ** len(parts[3]))
-        if a == 0 and b == 0:
-            return c + frac
-        if a == 0:
-            return b * 60 + c + frac
-        return a * 3600 + b * 60 + c + frac
-    raise ValueError(f"timecode không hợp lệ: {token}")
+    """Đọc timecode timeline — 7 định dạng + legacy (xem timeline_formats)."""
+    from videobuilder.core.timeline_formats import parse_time_token
+
+    return parse_time_token(token)
 
 
 def format_prompt_timecode(seconds: float) -> str:
-    """Chuẩn FORMAT: 00.00.SS.CS (<1 phút), 00.MM.SS[.CS] (≥1 phút)."""
-    seconds = max(0.0, float(seconds))
-    h = int(seconds // 3600)
-    rem = seconds - h * 3600
-    m = int(rem // 60)
-    s = rem - m * 60
-    si = int(s)
-    cs = int(round((s - si) * 100)) % 100
+    """Chuẩn prompt dễ đọc: MM:SS.mmm (vd. 00:09.000)."""
+    from videobuilder.core.timeline_formats import format_readable_timecode
 
-    if h > 0:
-        return f"{h:02d}.{m:02d}.{si:02d}.{cs:02d}"
-    if m > 0:
-        if cs == 0:
-            return f"00.{m:02d}.{si:02d}"
-        return f"00.{m:02d}.{si:02d}.{cs:02d}"
-    if cs == 0:
-        return f"00.00.{si:02d}"
-    return f"00.00.{si:02d}.{cs:02d}"
+    return format_readable_timecode(seconds)
 
 
 def format_time_range(start: float, end: float) -> str:

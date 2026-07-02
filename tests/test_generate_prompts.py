@@ -34,19 +34,19 @@ from videobuilder.core.groq_models import GROQ_LLM_DEFAULT_MODEL
 
 class TestPromptTimecode:
     def test_zero(self):
-        assert format_prompt_timecode(0.0) == "00.00.00"
+        assert format_prompt_timecode(0.0) == "00:00.000"
 
     def test_subminute_fraction(self):
-        assert format_prompt_timecode(1.92) == "00.00.01.92"
+        assert format_prompt_timecode(1.92) == "00:01.920"
 
     def test_ten_point_eight_seconds(self):
-        assert format_prompt_timecode(10.8) == "00.00.10.80"
+        assert format_prompt_timecode(10.8) == "00:10.800"
 
     def test_two_minutes(self):
-        assert format_prompt_timecode(120.0) == "00.02.00"
+        assert format_prompt_timecode(120.0) == "02:00.000"
 
     def test_range_subminute(self):
-        assert format_time_range(0.0, 1.92) == "00.00.00-00.00.01.92"
+        assert format_time_range(0.0, 1.92) == "00:00.000-00:01.920"
 
     def test_parse_token_values(self):
         from videobuilder.core.generate_prompts import parse_prompt_timecode_token
@@ -77,7 +77,7 @@ class TestFormatBeatLine:
             style=DEFAULT_ART_STYLE,
         )
         block = format_beat_line(1, beat)
-        assert block.startswith("001_[00.00.00-00.00.01.92]")
+        assert block.startswith("001_[00:00.000-00:01.920]")
         assert "\n" not in block
         assert "CHARACTER BIBLE:" in block
         assert 'Câu audio bám sát: "Bạn mở mắt khi trời vẫn còn xám."' in block

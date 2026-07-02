@@ -55,6 +55,13 @@ from videobuilder.core.progress import (
     report_progress,
     reset_progress_floor,
 )
+from videobuilder.core.timeline_formats import (
+    BRACKET_RANGE_RE,
+    SCENE_LINE_RE,
+    SINGLE_TIMESTAMP_LINE_RE,
+    parse_bracket_time_range as _parse_bracket_time_range,
+    scenes_from_timeline_text,
+)
 
 
 @dataclass
@@ -1667,45 +1674,6 @@ def parse_scene_bracket_time(mm: str, sep: str, ss: str, frac: str | None = None
     return base
 
 
-SCENE_LINE_RE = re.compile(
-    r"^(\d{3})_\[([^\]–-]+?)\s*[–-]\s*([^\]]+?)\]",
-    re.IGNORECASE,
-)
-
-BRACKET_RANGE_RE = re.compile(
-    r"\[(\d{2}:\d{2}(?:\.\d{1,3})?(?::\d{2})?)\s*[–-]\s*(\d{2}:\d{2}(?:\.\d{1,3})?(?::\d{2})?)\]",
-)
-
-SINGLE_TIMESTAMP_LINE_RE = re.compile(
-    r"^\[(\d{2}:\d{2}(?:\.\d{1,3})?(?::\d{2}(?:\.\d{1,3})?)?)\]",
-)
-
-
-def _scenes_from_single_timestamp_lines(lines: list[str], audio_duration: float) -> list[tuple[int, float, float]]:
-    """Mỗi dòng bắt đầu [HH:MM:SS.mmm] — end = mốc kế hoặc hết audio."""
-    marks: list[tuple[int, float]] = []
-    for raw in lines:
-        line = raw.strip()
-        if not line:
-            continue
-        match = SINGLE_TIMESTAMP_LINE_RE.match(line)
-        if not match:
-            continue
-        try:
-            start = parse_time_to_seconds(match.group(1))
-        except ValueError:
-            continue
-        marks.append((len(marks) + 1, start))
-    if not marks:
-        return []
-    duration = max(float(audio_duration or 0), marks[-1][1] + 0.5)
-    scenes: list[tuple[int, float, float]] = []
-    for index, (scene_num, start) in enumerate(marks):
-        end = marks[index + 1][1] if index + 1 < len(marks) else duration
-        if end > start:
-            scenes.append((scene_num, start, end))
-    return scenes
-
 
 def _format_time_short(seconds: float) -> str:
     seconds = max(0.0, seconds)
@@ -1806,59 +1774,14 @@ def validate_scene_images(scenes, images_dir: Path):
 
 
 def parse_bracket_time_range(text: str):
-    pattern = r"\[(\d{2}:\d{2}(?::\d{2})?)\s*[–-]\s*(\d{2}:\d{2}(?::\d{2})?)\]"
-    match = re.search(pattern, text)
-    if not match or "CHARACTER REFERENCE" in text:
-        return None
-    start = parse_time_to_seconds(match.group(1))
-    end = parse_time_to_seconds(match.group(2))
-    if end > start:
-        return start, end
-    return None
+    return _parse_bracket_time_range(text)
 
 
 def parse_prompt_scenes(prompt_file: Path, audio_duration: float):
-    from videobuilder.core.generate_prompts import parse_prompt_timecode_token
-
     text = prompt_file.read_text(encoding="utf-8", errors="ignore")
-    lines = text.splitlines()
-
-    scenes = []
-    has_scene_lines = any(SCENE_LINE_RE.match(ln.strip()) for ln in lines)
-
-    if has_scene_lines:
-        for line in lines:
-            line = line.strip()
-            if not line or re.match(r"^\d{3}_\[CHARACTER\s+REFERENCE\]", line, re.I):
-                continue
-            match = SCENE_LINE_RE.match(line)
-            if match:
-                scene_num = int(match.group(1))
-                try:
-                    start = parse_prompt_timecode_token(match.group(2))
-                    end = parse_prompt_timecode_token(match.group(3))
-                except ValueError:
-                    continue
-                if end > start:
-                    scenes.append((scene_num, start, end))
-        if scenes:
-            scenes.sort(key=lambda x: (x[1], x[0]))
-            return scenes
-
-    ranges = []
-    for start, end in BRACKET_RANGE_RE.findall(text):
-        s = parse_time_to_seconds(start)
-        e = parse_time_to_seconds(end)
-        if e > s:
-            ranges.append((s, e))
-
-    if ranges:
-        return [(i + 1, s, e) for i, (s, e) in enumerate(ranges)]
-
-    single = _scenes_from_single_timestamp_lines(lines, audio_duration)
-    if single:
-        return single
-
+    scenes = scenes_from_timeline_text(text, audio_duration)
+    if scenes:
+        return scenes
     raise RuntimeError("Không tìm thấy scene trong file prompt.")
 
 

@@ -151,22 +151,20 @@ def parse_prompt_entries(prompt_file: Path) -> list[PromptImageEntry]:
     if not prompt_file.is_file():
         raise FileNotFoundError(f"Không tìm thấy file prompt: {prompt_file}")
 
-    entries: list[PromptImageEntry] = []
-    from videobuilder.core.generate_prompts import parse_prompt_timecode_token
+    from videobuilder.core.timeline_formats import parse_prompt_scene_line
 
+    entries: list[PromptImageEntry] = []
     lines = prompt_file.read_text(encoding="utf-8", errors="ignore").splitlines()
     raw_entries: list[tuple[int, float, str]] = []
     for raw in lines:
         line = raw.strip()
         if not line:
             continue
-        if re.match(r"^\d{3}_\[CHARACTER\s+REFERENCE\]", line, re.I):
-            continue
-        match = SCENE_LINE_RE.match(line)
-        if match:
-            scene_num = int(match.group(1))
-            start = parse_prompt_timecode_token(match.group(2))
-            end = parse_prompt_timecode_token(match.group(3))
+        entry = parse_prompt_scene_line(line)
+        if entry:
+            scene_num = entry.scene_num
+            start = entry.start
+            end = entry.end
             if end <= start:
                 end = start + 0.5
             raw_entries.append((scene_num, start, line))
@@ -177,7 +175,9 @@ def parse_prompt_entries(prompt_file: Path) -> list[PromptImageEntry]:
         single = SINGLE_TIMESTAMP_LINE_RE.match(line)
         if single:
             try:
-                start = parse_time_to_seconds(single.group(1))
+                from videobuilder.core.timeline_formats import parse_time_token
+
+                start = parse_time_token(single.group(1))
             except ValueError:
                 continue
             scene_num = len(raw_entries) + 1
