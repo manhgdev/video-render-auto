@@ -575,6 +575,12 @@ class RenderTabMixin:
                 )
             return False
 
+        def _can_generate_missing_images(self) -> bool:
+            from videobuilder.core.generate_images import check_gemini_image
+
+            status = check_gemini_image(api_key=self.gemini_api_key_var.get())
+            return bool(status.get("ok"))
+
         def _begin_render_with_missing_images(self, err: MissingSceneImagesError, *, preview: bool):
             if not self._prepare_gen_missing_images():
                 return
@@ -585,6 +591,20 @@ class RenderTabMixin:
                 return
             options["skip_missing_images"] = True
             options["gen_missing_scenes"] = list(err.missing)
+            self._run_build(options)
+
+        def _begin_render_skipping_missing_images(self, err: MissingSceneImagesError, *, preview: bool):
+            try:
+                options = self._validate(preview=preview, skip_missing_images=True)
+            except ValueError as val_err:
+                self._show_validation_error(val_err)
+                return
+            options["skip_missing_images"] = True
+            self._show_warning(
+                "Thiếu ảnh",
+                f"{err}\n\nKhông có Gemini API key/gói phù hợp, nên sẽ bỏ qua scene thiếu ảnh và tiếp tục render.",
+            )
+            self._log(f"Bỏ qua {len(err.missing)} scene thiếu ảnh vì chưa có Gemini.", "warn")
             self._run_build(options)
 
         def _run_build(self, options, ask_open=True):
@@ -756,8 +776,10 @@ class RenderTabMixin:
             try:
                 options = self._validate(preview=False)
             except MissingSceneImagesError as err:
-                if self._ask_gen_missing_images(err):
+                if self._can_generate_missing_images() and self._ask_gen_missing_images(err):
                     self._begin_render_with_missing_images(err, preview=False)
+                else:
+                    self._begin_render_skipping_missing_images(err, preview=False)
                 return
             except ValueError as err:
                 self._show_validation_error(err)
@@ -777,8 +799,10 @@ class RenderTabMixin:
             try:
                 options = self._validate(preview=True)
             except MissingSceneImagesError as err:
-                if self._ask_gen_missing_images(err):
+                if self._can_generate_missing_images() and self._ask_gen_missing_images(err):
                     self._begin_render_with_missing_images(err, preview=True)
+                else:
+                    self._begin_render_skipping_missing_images(err, preview=True)
                 return
             except ValueError as err:
                 self._show_validation_error(err)
