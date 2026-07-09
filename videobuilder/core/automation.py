@@ -33,15 +33,22 @@ FALLBACK_AUTOMATION_PROMPT = USER_AUTOMATION_PROMPT
 DEFAULT_TTS_VOICE = "vi-VN-HoaiMyNeural"
 DEFAULT_TTS_RATE = "+0%"
 TTS_VOICE_OPTIONS: tuple[str, ...] = (
-    "vi-VN-HoaiMyNeural",
-    "vi-VN-NamMinhNeural",
+    # === GIỌNG VIỆT HAY (MIỄN PHÍ - Edge TTS) ===
+    "vi-VN-HoaiMyNeural",      # Nữ chính, tự nhiên, hay nhất
+    "vi-VN-AnNgocNeural",      # Ngọc Huyền (nữ ấm, hay)
+    "vi-VN-KimNganNeural",     # Cô bé hoạt ngôn, trẻ trung
+    "vi-VN-MaiHoaiNeural",     # Nữ dịu dàng
+    "vi-VN-NamMinhNeural",     # Nam trầm ấm
+    "vi-VN-ThanhVietNeural",   # Nam trẻ
+    "vi-VN-BaoQuocNeural",     # Nam truyền cảm
+
+    # === GIỌNG QUỐC TẾ HAY ===
+    "en-US-AdamNeural",        # Adam (nam Mỹ rất hay, tự nhiên)
     "en-US-JennyNeural",
     "en-US-GuyNeural",
     "en-US-AriaNeural",
     "en-GB-SoniaNeural",
     "en-GB-RyanNeural",
-    "ko-KR-SunHiNeural",
-    "ko-KR-InJoonNeural",
 )
 
 DEFAULT_AUTOMATION_PROMPT_TEXT = """# Prompt mẫu cho tab Tự động
@@ -504,7 +511,7 @@ def ensure_edge_tts_available(*, auto_install: bool = True, log_callback=None) -
     if log_callback:
         log_callback("Chưa có edge-tts → tự cài để tạo audio.mp3...", "info")
     try:
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "edge-tts"])
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "groq", "edge-tts", "yt-dlp"])
     except subprocess.CalledProcessError as err:
         raise AutomationError("Không cài được edge-tts. Chạy thủ công: pip install edge-tts") from err
     if not check_edge_tts_available():

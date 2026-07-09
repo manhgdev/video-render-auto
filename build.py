@@ -119,7 +119,7 @@ def main() -> None:
         help="Do not bump patch version (CI)",
     )
     args = parser.parse_args()
-    ensure_python()
+    ensure_python(__file__, sys.argv)
 
     platform = args.platform or host_platform()
 

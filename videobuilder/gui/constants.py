@@ -353,9 +353,11 @@ FIELD_HELP = {
     "auto_voice": (
         "Giọng đọc",
         "Giọng Edge TTS (Microsoft) khi tạo audio từ script.\n\n"
-        "• vi-VN-HoaiMyNeural / NamMinhNeural — tiếng Việt\n"
-        "• en-US-* — tiếng Anh\n\n"
-        "Có thể gõ tên giọng khác nếu biết mã chính xác.",
+        "• vi-VN-HoaiMyNeural (hay nhất)\n"
+        "• vi-VN-AnNgocNeural (Ngọc Huyền)\n"
+        "• vi-VN-KimNganNeural (cô bé hoạt ngôn, trẻ trung)\n"
+        "• en-US-AdamNeural (nam Mỹ rất hay)\n\n"
+        "Tất cả đều miễn phí. Chọn giọng rồi bấm Tạo Video.",
     ),
     "auto_rate": (
         "Tốc độ TTS",

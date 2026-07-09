@@ -98,14 +98,15 @@ def _discover_bin_dirs() -> list[Path]:
 
 def ffmpeg_install_hint() -> str:
     if sys.platform == "darwin":
-        return "cài thủ công: brew install ffmpeg"
+        return "bấm «Cài đặt» để chạy brew install ffmpeg"
     if sys.platform == "win32":
         return "bấm «Cài FFmpeg» hoặc: winget install Gyan.FFmpeg"
     return "cài thủ công ffmpeg + ffprobe (apt/dnf/pacman...)"
 
 
 def ffmpeg_can_auto_install() -> bool:
-    return sys.platform == "win32"
+    """Trên macOS cho phép cài qua brew, Windows dùng winget/portable."""
+    return sys.platform in ("win32", "darwin")
 
 
 def ensure_ffmpeg_on_path() -> bool:
@@ -289,6 +290,35 @@ def install_ffmpeg(progress_callback=None) -> dict:
     def log(message: str):
         if progress_callback:
             progress_callback(message)
+
+    if sys.platform == "darwin":
+        log("Đang cài FFmpeg qua Homebrew (brew install ffmpeg)...")
+        try:
+            result = subprocess.run(
+                ["brew", "install", "ffmpeg"],
+                capture_output=True,
+                text=True,
+                timeout=300,
+            )
+            if result.returncode == 0 or "already installed" in (result.stdout or "").lower():
+                log("Cài FFmpeg qua brew thành công.")
+                return check_ffmpeg()
+            else:
+                log(f"brew install lỗi: {result.stderr or result.stdout}")
+                return {
+                    **check_ffmpeg(),
+                    "message": "Không cài được FFmpeg qua brew. Hãy chạy thủ công: brew install ffmpeg",
+                }
+        except FileNotFoundError:
+            return {
+                **check_ffmpeg(),
+                "message": "Không tìm thấy brew. Vui lòng cài Homebrew trước (https://brew.sh)",
+            }
+        except subprocess.TimeoutExpired:
+            return {
+                **check_ffmpeg(),
+                "message": "Cài FFmpeg quá lâu. Hãy chạy thủ công: brew install ffmpeg",
+            }
 
     if sys.platform != "win32":
         status = check_ffmpeg()

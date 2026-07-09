@@ -693,7 +693,8 @@ class AutoTabMixin:
                 textvariable=self.auto_voice_var,
                 values=TTS_VOICE_OPTIONS,
                 state="normal",
-                height=6,
+                height=12,
+                width=28,
             ).grid(row=0, column=1, sticky="ew", padx=(0, 8))
             rate_label = self._muted_label_with_help(voice_row, "Tốc độ", help_key="auto_rate")
             rate_label.grid(row=0, column=2, sticky="w", padx=(0, 4))

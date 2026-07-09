@@ -20,7 +20,7 @@ load_env()
 from release.bootstrap import ensure_python  # noqa: E402
 
 if __name__ == "__main__":
-    ensure_python()
+    ensure_python(__file__)
     from videobuilder.gui.app import main
 
     main()

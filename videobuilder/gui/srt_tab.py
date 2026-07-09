@@ -207,6 +207,7 @@ class SrtTabMixin:
         def _resolve_srt_file_for_split(self) -> Path | None:
             self._apply_srt_output_name()
             for candidate in (
+                self.srt_input_var.get().strip(),
                 self.srt_output_var.get().strip(),
                 self.subtitle_var.get().strip(),
             ):
@@ -283,16 +284,21 @@ class SrtTabMixin:
                 label_width=lw, help_key="srt_audio", on_clear=self._on_srt_audio_cleared,
             )
 
+            self._path_field(
+                parent, 2, "File SRT có sẵn", self.srt_input_var, self._pick_srt_input,
+                label_width=lw, help_key="srt_input",
+            )
+
             use_row = ttk.Frame(parent, style="Card.TFrame")
-            use_row.grid(row=2, column=1, columnspan=2, sticky="ew", pady=(0, 4))
+            use_row.grid(row=3, column=1, columnspan=2, sticky="ew", pady=(0, 4))
             self.srt_use_project_btn = ttk.Button(
                 use_row, text="Lấy audio tab Dự án",
                 command=self._use_project_audio_for_srt, style="Small.TButton",
             )
             self.srt_use_project_btn.pack(side=tk.LEFT)
 
-            self._srt_output_path_field(parent, 3, lw)
-            self._srt_prompts_output_path_field(parent, 4, lw)
+            self._srt_output_path_field(parent, 4, lw)
+            self._srt_prompts_output_path_field(parent, 5, lw)
 
         def _sync_srt_prompts_output_display(self, from_output_var=False):
             self._sync_file_export_display(
@@ -310,11 +316,12 @@ class SrtTabMixin:
         def _reset_srt_prompts_output_path(self):
             audio = self.srt_audio_var.get().strip()
             if audio and Path(audio).is_file():
-                self._sync_exports_from_audio(audio)
+                self._sync_srt_prompts_output_from_audio(audio)
             else:
                 self.srt_prompts_output_var.set("")
                 self.srt_prompts_output_dir_var.set("")
                 self.srt_prompts_output_name_var.set("subtitle")
+                self.srt_input_var.set("")
 
         def _sync_srt_prompts_output_from_audio(self, audio_path: str):
             path = Path(audio_path)
@@ -368,6 +375,7 @@ class SrtTabMixin:
                 self.srt_output_var.set("")
                 self.srt_output_dir_var.set("")
                 self.srt_output_name_var.set("subtitle")
+                self.srt_input_var.set("")
 
         def _sync_exports_from_audio(self, audio_path: str):
             path = Path(audio_path)
@@ -375,6 +383,7 @@ class SrtTabMixin:
                 return
             self.srt_output_var.set(str(default_srt_path(path)))
             self.srt_prompts_output_var.set(str(default_prompts_path(path)))
+            self.srt_input_var.set("")
             self._sync_srt_output_display(from_output_var=True)
             self._sync_srt_prompts_output_display(from_output_var=True)
 
@@ -390,6 +399,19 @@ class SrtTabMixin:
             if path:
                 self.srt_audio_var.set(path)
                 self._sync_exports_from_audio(path)
+
+        def _pick_srt_input(self):
+            path = filedialog.askopenfilename(
+                parent=self,
+                title="Chọn file SRT có sẵn để cắt ngắn/dài",
+                filetypes=[("SRT", "*.srt"), ("Tất cả", "*.*")],
+            )
+            if path:
+                self.srt_input_var.set(path)
+                if not self.srt_output_var.get().strip():
+                    self.srt_output_var.set(path)
+                self._apply_srt_output_name()
+                self._update_srt_open_buttons()
 
         def _pick_srt_output(self):
             saved = self.srt_output_var.get().strip()
@@ -431,7 +453,11 @@ class SrtTabMixin:
                     or self.srt_prompts_output_var.get().strip()
                 )
             else:
-                srt_target = self.last_srt_output or self.srt_output_var.get().strip()
+                srt_target = (
+                    self.srt_input_var.get().strip()
+                    or self.last_srt_output
+                    or self.srt_output_var.get().strip()
+                )
                 prompts_target = self.last_prompts_output or self.srt_prompts_output_var.get().strip()
             srt_ok = bool(srt_target and path_exists_or_assume(srt_target, is_dir=False))
             prompts_ok = bool(prompts_target and path_exists_or_assume(prompts_target, is_dir=False))
@@ -452,6 +478,8 @@ class SrtTabMixin:
             self.srt_prompts_output_var.set("")
             self.srt_prompts_output_dir_var.set("")
             self.srt_prompts_output_name_var.set("subtitle")
+            self.srt_input_var.set("")
+            self.srt_input_var.set("")
 
         def _use_project_audio_for_srt(self):
             audio = self.audio_var.get().strip()

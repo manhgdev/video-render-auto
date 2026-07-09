@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import glob
 import os
 import shutil
 import subprocess
@@ -61,6 +62,38 @@ def check_python() -> None:
         raise SystemExit("Thiếu tkinter — cài Python có Tcl/Tk (python.org, không dùng embed)")
 
 
+def _interpreter_has_tkinter(python: Path) -> bool:
+    try:
+        proc = subprocess.run(
+            [str(python), "-c", "import tkinter"],
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return proc.returncode == 0
+
+
+def find_macos_python_with_tkinter() -> Path | None:
+    if not sys.platform == "darwin":
+        return None
+
+    patterns = [
+        "/Library/Frameworks/Python.framework/Versions/*/bin/python3",
+        "/Library/Frameworks/Python.framework/Versions/*/bin/python3.*",
+        "/Applications/Python 3*/bin/python3",
+    ]
+    candidates: list[Path] = []
+    for pattern in patterns:
+        candidates.extend(Path(path) for path in glob.glob(pattern))
+
+    for python in sorted(candidates, reverse=True):
+        if python.is_file() and os.access(python, os.X_OK) and _interpreter_has_tkinter(python):
+            return python
+    return None
+
+
 def detect_platform() -> str:
     if sys.platform == "win32":
         return "windows"
@@ -91,11 +124,17 @@ def try_install_python_windows() -> bool:
     return proc.returncode == 0 or "already installed" in text.lower()
 
 
-def ensure_python() -> None:
+def ensure_python(script: str | None = None, argv: list[str] | None = None) -> None:
     try:
         check_python()
         return
     except SystemExit as exc:
+        if detect_platform() == "macos":
+            python = find_macos_python_with_tkinter()
+            if python is not None:
+                script_path = script or sys.argv[0]
+                args = argv if argv is not None else sys.argv
+                os.execv(str(python), [str(python), script_path, *args[1:]])
         print(exc, file=sys.stderr)
 
     if detect_platform() == "windows" and try_install_python_windows():
