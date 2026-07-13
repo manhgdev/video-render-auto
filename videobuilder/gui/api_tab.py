@@ -15,7 +15,7 @@ from videobuilder.core.create_srt import (
     set_groq_api_key,
     srt_packages_status,
 )
-from videobuilder.core.env_config import GEMINI_API_KEY_ENV, GROQ_API_KEY_ENV
+from videobuilder.core.env_config import GEMINI_API_KEY_ENV, GROQ_API_KEY_ENV, ELEVENLABS_API_KEY_ENV
 from videobuilder.core.generate_images import (
     GenerateImagesError,
     check_gemini_image,
@@ -166,8 +166,17 @@ class ApiTabMixin:
 
         def _hydrate_api_keys_from_env(self):
             """Điền ô API key từ .env khi UI/settings trống."""
-            from videobuilder.core.automation import invalidate_auto_packages_cache
-            from videobuilder.core.env_config import GEMINI_API_KEY_ENV, GROQ_API_KEY_ENV, env_api_key, load_env
+            from videobuilder.core.automation import (
+                invalidate_auto_packages_cache,
+                set_elevenlabs_api_key,
+            )
+            from videobuilder.core.env_config import (
+                ELEVENLABS_API_KEY_ENV,
+                GEMINI_API_KEY_ENV,
+                GROQ_API_KEY_ENV,
+                env_api_key,
+                load_env,
+            )
             from videobuilder.core.generate_images import apply_env_gemini_key, set_gemini_api_key
 
             load_env()
@@ -179,14 +188,23 @@ class ApiTabMixin:
                 key = env_api_key(GEMINI_API_KEY_ENV)
                 if key:
                     self.gemini_api_key_var.set(key)
+            if not self.elevenlabs_api_key_var.get().strip():
+                key = env_api_key(ELEVENLABS_API_KEY_ENV)
+                if key:
+                    self.elevenlabs_api_key_var.set(key)
             self._apply_groq_api_key(silent=True)
             set_gemini_api_key(self.gemini_api_key_var.get())
             apply_env_gemini_key()
+            set_elevenlabs_api_key(self.elevenlabs_api_key_var.get())
             invalidate_auto_packages_cache()
             if getattr(self, "groq_api_status_var", None) is not None:
                 self._refresh_groq_api_status()
             if getattr(self, "gemini_api_status_var", None) is not None:
                 self._refresh_gemini_api_status()
+            if getattr(self, "elevenlabs_api_status_var", None) is not None:
+                self._refresh_elevenlabs_api_status()
+            if hasattr(self, "_refresh_tts_status"):
+                self._refresh_tts_status()
 
         def _clear_gemini_api_key(self):
             self.gemini_api_key_var.set("")
@@ -214,6 +232,63 @@ class ApiTabMixin:
                 self.gemini_key_toggle_btn.configure(
                     text="Hiện" if self._gemini_key_hidden else "Ẩn",
                 )
+
+        def _apply_elevenlabs_api_key(self, *, silent: bool = False):
+            from videobuilder.core.automation import invalidate_auto_packages_cache, set_elevenlabs_api_key
+
+            set_elevenlabs_api_key(self.elevenlabs_api_key_var.get())
+            invalidate_auto_packages_cache()
+            self._refresh_elevenlabs_api_status()
+            if hasattr(self, "_refresh_tts_status"):
+                self._refresh_tts_status()
+            if not silent:
+                self._save_settings()
+
+        def _clear_elevenlabs_api_key(self):
+            self.elevenlabs_api_key_var.set("")
+            self._apply_elevenlabs_api_key()
+
+        def _check_elevenlabs_api_key(self):
+            self._apply_elevenlabs_api_key(silent=True)
+            from videobuilder.core.automation import elevenlabs_api_keys
+
+            keys = elevenlabs_api_keys()
+            if keys:
+                msg = f"Có {len(keys)} key — sẵn sàng TTS Adam"
+                self._log(msg, "success")
+                self._show_info("ElevenLabs", msg)
+            else:
+                self._show_warning("ElevenLabs", f"Chưa có {ELEVENLABS_API_KEY_ENV}.")
+
+        def _toggle_eleven_key_visibility(self):
+            self._eleven_key_hidden = not getattr(self, "_eleven_key_hidden", True)
+            if getattr(self, "eleven_key_entry", None):
+                self.eleven_key_entry.configure(
+                    show="*" if self._eleven_key_hidden else "",
+                )
+            if getattr(self, "eleven_key_toggle_btn", None):
+                self.eleven_key_toggle_btn.configure(
+                    text="Hiện" if self._eleven_key_hidden else "Ẩn",
+                )
+
+        def _refresh_elevenlabs_api_status(self):
+            if not getattr(self, "_eleven_api_inner", None):
+                return
+            from videobuilder.core.automation import elevenlabs_api_keys
+            from videobuilder.core.env_config import ELEVENLABS_API_KEY_ENV
+
+            keys = elevenlabs_api_keys()
+            if keys:
+                msg = f"ElevenLabs ✓ ({len(keys)} key)"
+                bg, fg = C["ok_bg"], C["ok_fg"]
+            else:
+                msg = f"Chưa có {ELEVENLABS_API_KEY_ENV}"
+                bg, fg = C["warn_bg"], C["warn_fg"]
+            self.elevenlabs_api_status_var.set(msg)
+            self._eleven_api_inner.configure(bg=bg)
+            for child in self._eleven_api_inner.winfo_children():
+                if isinstance(child, tk.Label):
+                    child.configure(bg=bg, fg=fg)
 
         def _refresh_groq_api_status(self):
             if not getattr(self, "_groq_api_inner", None):
@@ -265,6 +340,7 @@ class ApiTabMixin:
         def _refresh_api_tab_status(self):
             self._refresh_groq_api_status()
             self._refresh_gemini_api_status()
+            self._refresh_elevenlabs_api_status()
 
         def _install_groq_packages_from_api(self):
             if self.srt_running or self.whisper_installing:
@@ -342,13 +418,43 @@ class ApiTabMixin:
             )
             self.gemini_install_btn.pack(side=tk.LEFT)
 
+            eleven_panel, eleven_body = self._section_panel(parent, "ElevenLabs — TTS Adam")
+            eleven_panel.grid(row=2, column=0, columnspan=3, sticky="ew", pady=(0, 8))
+            eleven_body.columnconfigure(1, weight=1)
+
+            self._eleven_key_hidden = True
+            (
+                self.eleven_key_entry,
+                self.eleven_key_toggle_btn,
+                _eleven_check,
+            ) = self._api_key_block(
+                eleven_body, 0, "ElevenLabs", self.elevenlabs_api_key_var,
+                apply_cmd=self._apply_elevenlabs_api_key,
+                clear_cmd=self._clear_elevenlabs_api_key,
+                check_cmd=self._check_elevenlabs_api_key,
+                toggle_cmd=self._toggle_eleven_key_visibility,
+                help_key="api_elevenlabs",
+            )
+
+            self._grid_field_label(
+                eleven_body, 1, "Trạng thái", "api_elevenlabs",
+                label_width=API_FIELD_LABEL_WIDTH, col=0, pady=2,
+            )
+            self._eleven_api_inner = self._status_chip(
+                eleven_body, self.elevenlabs_api_status_var, row=1,
+            )
+
             hint = tk.Label(
                 parent,
-                text="Key lưu trong cài đặt app hoặc file .env (GROQ_API_KEY, GEMINI_API_KEY).",
+                text="Key lưu trong cài đặt app hoặc .env "
+                "(GROQ_API_KEY, GEMINI_API_KEY, ELEVENLABS_API_KEY).",
                 font=self._font(8), bg=C["card"], fg=C["muted"], anchor="w", justify=tk.LEFT,
             )
-            hint.grid(row=2, column=0, columnspan=3, sticky="ew", pady=(4, 0))
+            hint.grid(row=3, column=0, columnspan=3, sticky="ew", pady=(4, 0))
 
             self.groq_api_key_var.trace_add("write", lambda *_: self._refresh_groq_api_status())
             self.gemini_api_key_var.trace_add("write", lambda *_: self._refresh_gemini_api_status())
+            self.elevenlabs_api_key_var.trace_add(
+                "write", lambda *_: self._refresh_elevenlabs_api_status(),
+            )
             self._refresh_api_tab_status()

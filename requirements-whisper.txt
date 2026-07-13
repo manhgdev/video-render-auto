@@ -3,8 +3,8 @@ numpy<2
 groq
 faster-whisper
 python-dotenv
-edge-tts
 yt-dlp
 google-genai
+# TTS: ElevenLabs API (ELEVENLABS_API_KEY trong .env) — không cần edge-tts
 # Tự cài khi gặp lỗi CUDA cublas (hoặc thủ công):
 # pip install torch==2.2.1 torchvision==0.17.1 torchaudio==2.2.1 --index-url https://download.pytorch.org/whl/cu121

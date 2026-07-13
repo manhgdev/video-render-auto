@@ -4,24 +4,35 @@
 
 from __future__ import annotations
 
-import asyncio
 import importlib.util
 import json
 import re
+import shutil
+import ssl
 import subprocess
 import sys
+import tempfile
 import threading
 import unicodedata
+import urllib.error
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from videobuilder.core.audio_pipeline import apply_env_api_keys, run_audio_pipeline
-from videobuilder.core.create_srt import DEFAULT_LANGUAGE, DEFAULT_SRT_SPLIT, groq_api_key, groq_client_available
-from videobuilder.core.env_config import GROQ_API_KEY_ENV
-from videobuilder.core.ffmpeg_setup import get_app_dir, get_bundle_dir, is_frozen_app
-from videobuilder.core.generate_prompts import GeneratePromptsError
+from videobuilder.core.audio_pipeline import apply_env_api_keys, run_prompts_from_srt
+from videobuilder.core.create_srt import (
+    DEFAULT_LANGUAGE,
+    DEFAULT_SRT_SPLIT,
+    cues_from_script_text,
+    groq_api_key,
+    groq_client_available,
+    refine_srt_cues,
+)
+from videobuilder.core.env_config import ELEVENLABS_API_KEY_ENV, GROQ_API_KEY_ENV, env_api_key
+from videobuilder.core.ffmpeg_setup import get_app_dir, get_bundle_dir, is_frozen_app, resolve_ffmpeg
 from videobuilder.core.groq_models import groq_llm_model_chain, load_cached_groq_models
+from videobuilder.core.pipeline import get_media_duration, write_srt_from_cues
 from videobuilder.core.progress import report_progress
 from videobuilder.core.timeline_paths import timeline_filename
 
@@ -30,26 +41,49 @@ BUNDLED_FALLBACK_PROMPT = get_bundle_dir() / "public" / "templates" / "automatio
 USER_AUTOMATION_PROMPT = get_app_dir() / "public" / "templates" / "automation_prompt_template.txt"
 DEFAULT_AUTOMATION_PROMPT = BUNDLED_AUTOMATION_PROMPT
 FALLBACK_AUTOMATION_PROMPT = USER_AUTOMATION_PROMPT
-DEFAULT_TTS_VOICE = "vi-VN-HoaiMyNeural"
-DEFAULT_TTS_RATE = "+0%"
-TTS_VOICE_OPTIONS: tuple[str, ...] = (
-    # === GIỌNG VIỆT HAY (MIỄN PHÍ - Edge TTS) ===
-    "vi-VN-HoaiMyNeural",      # Nữ chính, tự nhiên, hay nhất
-    "vi-VN-AnNgocNeural",      # Ngọc Huyền (nữ ấm, hay)
-    "vi-VN-KimNganNeural",     # Cô bé hoạt ngôn, trẻ trung
-    "vi-VN-MaiHoaiNeural",     # Nữ dịu dàng
-    "vi-VN-NamMinhNeural",     # Nam trầm ấm
-    "vi-VN-ThanhVietNeural",   # Nam trẻ
-    "vi-VN-BaoQuocNeural",     # Nam truyền cảm
 
-    # === GIỌNG QUỐC TẾ HAY ===
-    "en-US-AdamNeural",        # Adam (nam Mỹ rất hay, tự nhiên)
-    "en-US-JennyNeural",
-    "en-US-GuyNeural",
-    "en-US-AriaNeural",
-    "en-GB-SoniaNeural",
-    "en-GB-RyanNeural",
+# ElevenLabs Adam — cùng voice_id StudioVoiceAdamAI (chỉ audio; SRT vẫn qua Groq STT).
+DEFAULT_TTS_VOICE = "pNInz6obpgDQGcFmaJgB"
+DEFAULT_TTS_RATE = "+0%"  # ponytail: giữ UI; ElevenLabs không dùng rate Edge
+TTS_VOICE_OPTIONS: tuple[str, ...] = (
+    "pNInz6obpgDQGcFmaJgB",  # Adam
+    "EXAVITQu4vr4xnSDxMaL",  # Sarah
+    "VR6AewLTigWG4xSOukaG",  # Arnold
 )
+ELEVENLABS_MODEL_ID = "eleven_v3"  # khớp StudioVoiceAdamAI
+ELEVENLABS_MAX_CHARS = 4000  # ponytail: cắt script dài; nâng nếu quota model cho phép
+
+# Tab Tạo audio: ElevenLabs (cloud) hoặc macOS say (AdamVoiceAssistant / local)
+TTS_ENGINE_ELEVENLABS = "ElevenLabs Adam"
+TTS_ENGINE_MACOS_SAY = "macOS say"
+TTS_ENGINE_OPTIONS = (TTS_ENGINE_ELEVENLABS, TTS_ENGINE_MACOS_SAY)
+DEFAULT_TTS_ENGINE = TTS_ENGINE_ELEVENLABS
+DEFAULT_MACOS_SAY_VOICE = "Linh"
+DEFAULT_MACOS_SAY_RATE = 193  # ~AdamVoice; say mặc định ~175
+
+# Độ dài video = độ dài audio. Short = ép script ngắn → TTS/SRT/ảnh tự khớp.
+AUTO_DURATION_OPTIONS = (
+    ("full", "Dài (7–12 phút)"),
+    ("6", "Short 6 giây"),
+    ("10", "Short 10 giây"),
+)
+DEFAULT_AUTO_DURATION = "full"
+AUTO_DURATION_LABEL_TO_KEY = {label: key for key, label in AUTO_DURATION_OPTIONS}
+AUTO_DURATION_KEY_TO_LABEL = {key: label for key, label in AUTO_DURATION_OPTIONS}
+
+
+def normalize_auto_duration(value: str | None) -> str:
+    text = (value or "").strip()
+    if text in AUTO_DURATION_KEY_TO_LABEL:
+        return text
+    if text in AUTO_DURATION_LABEL_TO_KEY:
+        return AUTO_DURATION_LABEL_TO_KEY[text]
+    if text in ("6s", "6 giây"):
+        return "6"
+    if text in ("10s", "10 giây"):
+        return "10"
+    return DEFAULT_AUTO_DURATION
+
 
 DEFAULT_AUTOMATION_PROMPT_TEXT = """# Prompt mẫu cho tab Tự động
 
@@ -103,7 +137,6 @@ def ensure_default_automation_prompt() -> Path:
 
 _AUTO_PACKAGE_MODULES = {
     "groq": "groq",
-    "edge-tts": "edge_tts",
     "yt-dlp": "yt_dlp",
 }
 
@@ -130,25 +163,24 @@ def auto_packages_status(*, force: bool = False) -> dict:
     from videobuilder.core.create_srt import groq_api_key
 
     groq_key = bool(groq_api_key())
+    eleven_key = bool(elevenlabs_api_keys())
     groq_ok = _auto_package_installed("groq")
-    edge_ok = _auto_package_installed("edge-tts")
     ytdlp_ok = _auto_package_installed("yt-dlp")
     missing: list[str] = []
     if not groq_ok:
         missing.append("groq")
-    if not edge_ok:
-        missing.append("edge-tts")
     if not ytdlp_ok:
         missing.append("yt-dlp")
     _auto_packages_cache = {
         "groq_key": groq_key,
+        "elevenlabs_key": eleven_key,
         "groq_ok": groq_ok,
-        "edge_tts_ok": edge_ok,
+        "edge_tts_ok": True,  # legacy UI key — TTS giờ là ElevenLabs
         "yt_dlp_ok": ytdlp_ok,
         "missing": missing,
         "needs_install": bool(missing),
         "ready_for_topics": groq_key and groq_ok,
-        "ready_for_pipeline": groq_key and groq_ok and edge_ok,
+        "ready_for_pipeline": groq_key and groq_ok and eleven_key,
         "ready_for_youtube": groq_key and groq_ok and ytdlp_ok,
     }
     return _auto_packages_cache
@@ -169,10 +201,10 @@ def warmup_auto_defaults() -> None:
 
 
 def install_auto_packages(*, log_callback=None) -> None:
-    """Cài groq + edge-tts + yt-dlp khi user bấm Cài đặt."""
+    """Cài groq + yt-dlp khi user bấm Cài đặt."""
     if is_frozen_app():
         raise AutomationError(
-            "Bản .exe không cài pip được. Build lại app hoặc chạy bản dev: pip install groq edge-tts yt-dlp"
+            "Bản .exe không cài pip được. Build lại app hoặc chạy bản dev: pip install groq yt-dlp"
         )
     missing = auto_packages_status()["missing"]
     if not missing:
@@ -459,6 +491,7 @@ def create_script_file(
     topic: str,
     output_dir: str | Path | None = None,
     *,
+    target_duration: str = DEFAULT_AUTO_DURATION,
     minutes: str = "7-12",
     log_callback=None,
     progress_callback=None,
@@ -468,89 +501,412 @@ def create_script_file(
     folder = project_folder_for_topic(topic, output_dir)
     folder.mkdir(parents=True, exist_ok=True)
     script_path = folder / f"audio_script_{slugify_topic(topic)}.txt"
+    duration_key = normalize_auto_duration(target_duration)
+    if duration_key == "6":
+        length_rule = (
+            "Viết script audio khoảng 6 giây khi đọc (~20–35 từ tiếng Việt). "
+            "Một hook mạnh + một ý duy nhất. Không giải thích dài."
+        )
+        min_len, max_tokens = 40, 512
+    elif duration_key == "10":
+        length_rule = (
+            "Viết script audio khoảng 10 giây khi đọc (~35–55 từ tiếng Việt). "
+            "Hook + một twist ngắn. Không lan man."
+        )
+        min_len, max_tokens = 60, 800
+    else:
+        length_rule = (
+            f"Viết script audio hoàn chỉnh độ dài khoảng {minutes} phút. "
+            "Script chỉ chứa lời đọc thuần."
+        )
+        min_len, max_tokens = 500, 8192
     data = _groq_json(
         _base_system_prompt(prompt),
         (
             f"Chủ đề đã chọn: {topic}\n"
-            f"Viết script audio hoàn chỉnh độ dài khoảng {minutes} phút. "
-            "Script chỉ chứa lời đọc thuần, không tiêu đề, không nhãn, không bullet, không ghi chú. "
+            f"{length_rule} "
+            "Không tiêu đề, không nhãn, không bullet, không ghi chú. "
             "Trả JSON đúng schema: {\"script\":\"...\"}."
         ),
-        max_tokens=8192,
+        max_tokens=max_tokens,
         log_callback=log_callback,
         progress_callback=progress_callback,
     )
     script = str(data.get("script") or "").strip()
-    if len(script) < 500:
-        raise AutomationError("Script quá ngắn hoặc Groq không trả trường script.")
+    if len(script) < min_len:
+        raise AutomationError(
+            f"Script quá ngắn ({len(script)} ký tự, cần ≥{min_len}) "
+            "hoặc Groq không trả trường script."
+        )
     script_path.write_text(script + "\n", encoding="utf-8")
     if log_callback:
-        log_callback(f"Đã tạo script: {script_path.name}", "success")
+        label = AUTO_DURATION_KEY_TO_LABEL.get(duration_key, duration_key)
+        log_callback(f"Đã tạo script ({label}): {script_path.name}", "success")
     _auto_report(progress_callback, 35, "Script xong")
     return script_path
 
 
-def check_edge_tts_available() -> bool:
-    try:
-        import edge_tts  # noqa: F401
+_elevenlabs_api_key_override: str | None = None
 
-        return True
+
+def elevenlabs_api_keys() -> list[str]:
+    """Keys từ override UI / .env — hỗ trợ nhiều key cách nhau bởi dấu phẩy."""
+    if _elevenlabs_api_key_override:
+        raw = _elevenlabs_api_key_override
+    else:
+        raw = (env_api_key(ELEVENLABS_API_KEY_ENV) or "").strip()
+    if not raw:
+        return []
+    return [k.strip() for k in raw.split(",") if k.strip()]
+
+
+def set_elevenlabs_api_key(key: str | None) -> None:
+    global _elevenlabs_api_key_override
+    text = (key or "").strip()
+    _elevenlabs_api_key_override = text or None
+
+
+def _detect_tts_language(text: str) -> str:
+    """Theo StudioVoiceAdamAI; script Việt → 'en' (không gửi 'vi', bỏ nhánh fr dễ false-positive)."""
+    if re.search(r"[\u3040-\u309f\u30a0-\u30ff]", text):
+        return "ja"
+    if re.search(r"[\uac00-\ud7af]", text):
+        return "ko"
+    if re.search(r"[\u4e00-\u9fff]", text):
+        return "zh"
+    return "en"
+
+
+def _split_text_for_tts(text: str, max_chars: int = ELEVENLABS_MAX_CHARS) -> list[str]:
+    text = text.strip()
+    if len(text) <= max_chars:
+        return [text]
+    chunks: list[str] = []
+    rest = text
+    while rest:
+        if len(rest) <= max_chars:
+            chunks.append(rest)
+            break
+        window = rest[:max_chars]
+        cut = max(window.rfind(". "), window.rfind("! "), window.rfind("? "), window.rfind("\n"))
+        if cut < max_chars // 3:
+            cut = window.rfind(" ")
+        if cut < max_chars // 3:
+            cut = max_chars
+        else:
+            cut += 1
+        piece = rest[:cut].strip()
+        if piece:
+            chunks.append(piece)
+        rest = rest[cut:].strip()
+    return chunks
+
+
+def _ssl_context() -> ssl.SSLContext:
+    """Python.org trên macOS thường thiếu cert.pem → CERTIFICATE_VERIFY_FAILED."""
+    candidates: list[str] = []
+    try:
+        import certifi
+
+        candidates.append(certifi.where())
     except ImportError:
-        return False
+        pass
+    candidates.extend(
+        [
+            "/opt/homebrew/etc/openssl@3/cert.pem",
+            "/usr/local/etc/openssl@3/cert.pem",
+            "/etc/ssl/cert.pem",
+            "/etc/ssl/certs/ca-certificates.crt",
+            str(Path(sys.base_prefix) / "etc" / "openssl" / "cert.pem"),
+        ]
+    )
+    for cafile in candidates:
+        if cafile and Path(cafile).is_file():
+            return ssl.create_default_context(cafile=cafile)
+    return ssl.create_default_context()
 
 
-def ensure_edge_tts_available(*, auto_install: bool = True, log_callback=None) -> None:
-    if check_edge_tts_available():
-        return
-    if is_frozen_app():
-        raise AutomationError(
-            "Thiếu edge-tts trong bản .exe. Cập nhật VideoBuilder hoặc chạy bản dev: pip install edge-tts"
-        )
-    if not auto_install:
-        raise AutomationError("Chưa cài edge-tts để tạo audio.mp3. Chạy: pip install edge-tts")
-    if log_callback:
-        log_callback("Chưa có edge-tts → tự cài để tạo audio.mp3...", "info")
+def _elevenlabs_tts_request(
+    text: str,
+    *,
+    api_key: str,
+    voice_id: str,
+    language_code: str,
+    enhance: bool = False,
+) -> bytes:
+    body: dict[str, Any] = {
+        "text": text,
+        "model_id": ELEVENLABS_MODEL_ID,
+        "voice_settings": {
+            "stability": 0.5,
+            "similarity_boost": 0.75,
+            "style": 0.6 if enhance else 0.0,
+            "use_speaker_boost": enhance,
+        },
+    }
+    if language_code and language_code != "auto":
+        body["language_code"] = language_code
+    if enhance:
+        body["apply_text_to_speech_enhancement"] = True
+    data = json.dumps(body).encode("utf-8")
+    req = urllib.request.Request(
+        f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}",
+        data=data,
+        headers={
+            "xi-api-key": api_key,
+            "Content-Type": "application/json",
+            "Accept": "audio/mpeg",
+        },
+        method="POST",
+    )
     try:
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "groq", "edge-tts", "yt-dlp"])
-    except subprocess.CalledProcessError as err:
-        raise AutomationError("Không cài được edge-tts. Chạy thủ công: pip install edge-tts") from err
-    if not check_edge_tts_available():
-        raise AutomationError("Đã cài edge-tts nhưng Python hiện tại chưa import được.")
+        with urllib.request.urlopen(req, timeout=180, context=_ssl_context()) as resp:
+            return resp.read()
+    except urllib.error.HTTPError as err:
+        detail = err.read().decode("utf-8", errors="replace")[:400]
+        raise AutomationError(f"ElevenLabs HTTP {err.code}: {detail}") from err
+    except urllib.error.URLError as err:
+        raise AutomationError(f"ElevenLabs kết nối lỗi: {err.reason}") from err
 
 
-def synthesize_audio_edge_tts(
+def _tts_with_key_rotation(
+    text: str,
+    *,
+    voice_id: str,
+    language_code: str,
+    enhance: bool = False,
+) -> bytes:
+    keys = elevenlabs_api_keys()
+    if not keys:
+        raise AutomationError(
+            f"Thiếu {ELEVENLABS_API_KEY_ENV} trong .env (TTS Adam / ElevenLabs)."
+        )
+    last_err: Exception | None = None
+    for api_key in keys:
+        try:
+            return _elevenlabs_tts_request(
+                text,
+                api_key=api_key,
+                voice_id=voice_id,
+                language_code=language_code,
+                enhance=enhance,
+            )
+        except AutomationError as err:
+            last_err = err
+            msg = str(err).lower()
+            if any(tok in msg for tok in ("401", "403", "429", "quota", "limit")):
+                continue
+            raise
+    raise AutomationError(
+        f"Tất cả ElevenLabs API key đều lỗi: {last_err}"
+    ) from last_err
+
+
+def _concat_mp3_chunks(chunk_paths: list[Path], out: Path) -> None:
+    if len(chunk_paths) == 1:
+        out.write_bytes(chunk_paths[0].read_bytes())
+        return
+    ffmpeg = resolve_ffmpeg()
+    if not ffmpeg:
+        # ponytail: không ffmpeg → ghép bytes thô (MP3 thường nghe được)
+        out.write_bytes(b"".join(p.read_bytes() for p in chunk_paths))
+        return
+    list_file = out.with_suffix(".concat.txt")
+    list_file.write_text(
+        "\n".join(f"file '{p.resolve().as_posix()}'" for p in chunk_paths),
+        encoding="utf-8",
+    )
+    try:
+        subprocess.check_call(
+            [
+                ffmpeg, "-y", "-f", "concat", "-safe", "0",
+                "-i", str(list_file), "-c", "copy", str(out),
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    finally:
+        list_file.unlink(missing_ok=True)
+
+
+def synthesize_text_elevenlabs(
+    text: str,
+    audio_path: str | Path,
+    *,
+    voice: str = DEFAULT_TTS_VOICE,
+    enhance: bool = False,
+    log_callback=None,
+    progress_callback=None,
+) -> Path:
+    """TTS ElevenLabs Adam — text → mp3 (tab Tạo audio / pipeline tự động)."""
+    _auto_report(progress_callback, 10, "TTS ElevenLabs...")
+    out = Path(audio_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    text = (text or "").strip()
+    if not text:
+        raise AutomationError("Văn bản rỗng, không tạo được audio.")
+
+    voice_id = (voice or DEFAULT_TTS_VOICE).strip() or DEFAULT_TTS_VOICE
+    if voice_id.startswith("vi-VN-") or voice_id.startswith("en-") or voice_id.startswith("ko-"):
+        voice_id = DEFAULT_TTS_VOICE
+    lang = _detect_tts_language(text)
+    chunks = _split_text_for_tts(text)
+    if log_callback:
+        log_callback(
+            f"TTS ElevenLabs Adam/{voice_id[:8]}… lang={lang} "
+            f"({len(chunks)} đoạn, {len(text)} ký tự) → {out.name}",
+            "info",
+        )
+
+    with tempfile.TemporaryDirectory(prefix="vb_tts_") as tmp:
+        tmp_dir = Path(tmp)
+        parts: list[Path] = []
+        for i, chunk in enumerate(chunks):
+            audio = _tts_with_key_rotation(
+                chunk, voice_id=voice_id, language_code=lang, enhance=enhance,
+            )
+            part = tmp_dir / f"part_{i:03d}.mp3"
+            part.write_bytes(audio)
+            parts.append(part)
+            pct = 10 + int((i + 1) / len(chunks) * 80)
+            _auto_report(progress_callback, pct, f"TTS {i + 1}/{len(chunks)}...")
+        _concat_mp3_chunks(parts, out)
+
+    if log_callback:
+        log_callback(f"Đã tạo audio: {out.name}", "success")
+    _auto_report(progress_callback, 100, "Audio xong")
+    return out
+
+
+def macos_say_available() -> bool:
+    return sys.platform == "darwin" and shutil.which("say") is not None
+
+
+def list_macos_say_voice_names(*, prefer_locale: str = "vi_VN") -> list[str]:
+    """Tên giọng từ `say -v ?` — locale ưu tiên lên đầu."""
+    if not macos_say_available():
+        return []
+    try:
+        raw = subprocess.check_output(
+            ["say", "-v", "?"], text=True, stderr=subprocess.STDOUT, timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return [DEFAULT_MACOS_SAY_VOICE]
+    preferred: list[str] = []
+    rest: list[str] = []
+    seen: set[str] = set()
+    for line in raw.splitlines():
+        m = re.match(r"^(.+?)\s+([a-z]{2}_[A-Z]{2})\s+#", line)
+        if not m:
+            continue
+        name = m.group(1).rstrip()
+        if name in seen:
+            continue
+        seen.add(name)
+        (preferred if m.group(2) == prefer_locale else rest).append(name)
+    return preferred + rest or [DEFAULT_MACOS_SAY_VOICE]
+
+
+def synthesize_text_macos_say(
+    text: str,
+    audio_path: str | Path,
+    *,
+    voice: str = DEFAULT_MACOS_SAY_VOICE,
+    rate: int = DEFAULT_MACOS_SAY_RATE,
+    log_callback=None,
+    progress_callback=None,
+) -> Path:
+    """TTS macOS `say` — text → wav → mp3."""
+    _auto_report(progress_callback, 10, "TTS macOS say...")
+    if not macos_say_available():
+        raise AutomationError("macOS say chỉ chạy trên macOS.")
+    ffmpeg = resolve_ffmpeg()
+    if not ffmpeg:
+        raise AutomationError("Cần FFmpeg để chuyển WAV → mp3.")
+
+    out = Path(audio_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    text = (text or "").strip()
+    if not text:
+        raise AutomationError("Văn bản rỗng, không tạo được audio.")
+    voice_name = (voice or DEFAULT_MACOS_SAY_VOICE).strip() or DEFAULT_MACOS_SAY_VOICE
+    try:
+        rate_i = max(90, min(400, int(rate)))
+    except (TypeError, ValueError):
+        rate_i = DEFAULT_MACOS_SAY_RATE
+
+    if log_callback:
+        log_callback(
+            f"TTS say/{voice_name} rate={rate_i} ({len(text)} ký tự) → {out.name}",
+            "info",
+        )
+
+    with tempfile.TemporaryDirectory(prefix="vb_say_") as tmp:
+        tmp_dir = Path(tmp)
+        txt, wav = tmp_dir / "input.txt", tmp_dir / "say.wav"
+        txt.write_text(text, encoding="utf-8")
+        _auto_report(progress_callback, 30, "say đang đọc...")
+        try:
+            subprocess.check_call(
+                [
+                    "say", "-v", voice_name, "-r", str(rate_i),
+                    "-f", str(txt), "-o", str(wav),
+                    "--data-format=LEF32@22050",
+                ],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+        except subprocess.CalledProcessError as err:
+            raise AutomationError(
+                f"say thất bại (giọng «{voice_name}»?). Thoát {err.returncode}."
+            ) from err
+        if not wav.is_file() or wav.stat().st_size < 100:
+            raise AutomationError("say không tạo được file WAV.")
+        _auto_report(progress_callback, 70, "Chuyển mp3...")
+        try:
+            subprocess.check_call(
+                [ffmpeg, "-y", "-i", str(wav), "-codec:a", "libmp3lame", "-q:a", "4", str(out)],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+        except subprocess.CalledProcessError as err:
+            raise AutomationError(f"FFmpeg chuyển mp3 thất bại: {err}") from err
+
+    if not out.is_file() or out.stat().st_size < 100:
+        raise AutomationError("File mp3 sau say trống hoặc lỗi.")
+    if log_callback:
+        log_callback(f"Đã tạo audio (say): {out.name}", "success")
+    _auto_report(progress_callback, 100, "Audio xong")
+    return out
+
+
+def synthesize_audio_elevenlabs(
     script_path: str | Path,
     audio_path: str | Path | None = None,
     *,
     voice: str = DEFAULT_TTS_VOICE,
     rate: str = DEFAULT_TTS_RATE,
+    enhance: bool = False,
     log_callback=None,
     progress_callback=None,
 ) -> Path:
-    _auto_report(progress_callback, 38, "TTS edge-tts...")
+    """TTS từ file script — wrapper quanh synthesize_text_elevenlabs."""
+    del rate
     script = Path(script_path)
     if not script.is_file():
         raise FileNotFoundError(f"Không tìm thấy script: {script}")
-    ensure_edge_tts_available(log_callback=log_callback)
     out = Path(audio_path) if audio_path else script.with_name("audio.mp3")
-    out.parent.mkdir(parents=True, exist_ok=True)
     text = script.read_text(encoding="utf-8-sig", errors="replace").strip()
-    if not text:
-        raise AutomationError("Script rỗng, không tạo được audio.")
+    return synthesize_text_elevenlabs(
+        text,
+        out,
+        voice=voice,
+        enhance=enhance,
+        log_callback=log_callback,
+        progress_callback=progress_callback,
+    )
 
-    async def run() -> None:
-        import edge_tts
 
-        communicate = edge_tts.Communicate(text, voice=voice, rate=rate)
-        await communicate.save(str(out))
-
-    if log_callback:
-        log_callback(f"TTS edge-tts: {voice} → {out.name}", "info")
-    asyncio.run(run())
-    if log_callback:
-        log_callback(f"Đã tạo audio: {out.name}", "success")
-    _auto_report(progress_callback, 48, "Audio xong")
-    return out
+# Alias tương thích import cũ
+synthesize_audio_edge_tts = synthesize_audio_elevenlabs
 
 
 def run_full_auto_pipeline(
@@ -562,19 +918,23 @@ def run_full_auto_pipeline(
     rate: str = DEFAULT_TTS_RATE,
     language: str = DEFAULT_LANGUAGE,
     split_mode: str = DEFAULT_SRT_SPLIT,
+    target_duration: str = DEFAULT_AUTO_DURATION,
     progress_callback=None,
     log_callback=None,
     process_controller=None,
 ) -> AutoProductionResult:
+    del language  # TTS path: SRT từ script, không STT
+    del process_controller
     _auto_report(progress_callback, 2, "Bắt đầu pipeline tự động...")
     script = create_script_file(
         production_prompt_path,
         topic,
         output_dir,
+        target_duration=target_duration,
         log_callback=log_callback,
         progress_callback=_scaled_progress(progress_callback, 2, 33),
     )
-    audio = synthesize_audio_edge_tts(
+    audio = synthesize_audio_elevenlabs(
         script,
         script.with_name("audio.mp3"),
         voice=voice,
@@ -584,19 +944,36 @@ def run_full_auto_pipeline(
     )
     srt = script.with_name("subtitle.srt")
     prompts = script.with_name(timeline_filename(slugify_topic(topic)))
+    script_text = script.read_text(encoding="utf-8-sig", errors="replace")
     try:
-        srt_path, prompts_path = run_audio_pipeline(
-            audio,
-            srt_output=srt,
-            prompts_output=prompts,
-            language=language,
-            split_mode=split_mode,
-            generate_prompts=True,
-            progress_callback=_scaled_progress(progress_callback, 50, 50),
-            log_callback=log_callback,
-            process_controller=process_controller,
+        duration = get_media_duration(audio)
+    except Exception:
+        duration = 0.0
+    if duration <= 0.5:
+        raise AutomationError("Không đọc được độ dài audio sau TTS.")
+
+    _auto_report(progress_callback, 52, "SRT từ script...")
+    raw_cues = cues_from_script_text(script_text, duration)
+    srt_cues = refine_srt_cues(raw_cues, split_mode)
+    if not srt_cues:
+        raise AutomationError("Không tạo được cue SRT từ script.")
+    write_srt_from_cues(srt, srt_cues)
+    if log_callback:
+        log_callback(
+            f"SRT từ script TTS: {len(srt_cues)} cue / {duration:.1f}s → {srt.name} "
+            "(không STT — tránh ảo giác Whisper trên Adam/VI)",
+            "success",
         )
-    except GeneratePromptsError as err:
+
+    try:
+        prompts_path = run_prompts_from_srt(
+            srt,
+            prompts,
+            log_callback=log_callback,
+            progress_callback=_scaled_progress(progress_callback, 60, 40),
+        )
+    except Exception as err:
+        # AudioPipelineError / GeneratePromptsError
         raise AutomationError(str(err)) from err
     _auto_report(progress_callback, 100, "Hoàn thành!")
     return AutoProductionResult(
@@ -604,6 +981,6 @@ def run_full_auto_pipeline(
         folder=script.parent,
         script_path=script,
         audio_path=audio,
-        srt_path=srt_path,
+        srt_path=srt,
         prompts_path=prompts_path,
     )

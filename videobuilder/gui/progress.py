@@ -130,8 +130,8 @@ def short_srt_status(message: str) -> str:
         return "Groq đề xuất chủ đề..."
     if msg.startswith("Groq viết script"):
         return "Groq viết script..."
-    if msg.startswith("TTS edge-tts"):
-        return "TTS edge-tts..."
+    if msg.startswith("TTS ElevenLabs") or msg.startswith("TTS edge-tts"):
+        return "TTS ElevenLabs..."
     if msg.startswith("yt-dlp"):
         return "yt-dlp tải YouTube..."
     if msg.startswith("Phân tích YouTube"):

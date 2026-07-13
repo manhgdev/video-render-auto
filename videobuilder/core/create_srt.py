@@ -981,7 +981,7 @@ def install_srt_packages(*, log_callback=None) -> None:
     _log(log_callback, "Đang cài gói nhận dạng (Groq + Whisper)...")
     cmd = [
         sys.executable, "-m", "pip", "install",
-        "groq", WHISPER_NUMPY_SPEC, "faster-whisper", "edge-tts",
+        "groq", WHISPER_NUMPY_SPEC, "faster-whisper",
         "python-dotenv",
     ]
     _log(log_callback, f"Python: {sys.executable}")
@@ -1608,7 +1608,7 @@ def _groq_text_is_hallucination(
     duration: float = 0.0,
     strict: bool = True,
 ) -> bool:
-    """Phát hiện ảo giác Whisper: echo prompt, nhạc nền, chữ vô nghĩa."""
+    """Phát hiện ảo giác Whisper: echo prompt, nhạc nền, chữ mất nguyên âm."""
     compact = re.sub(r"\s+", " ", (text or "").strip())
     if not compact:
         return True
@@ -1626,11 +1626,48 @@ def _groq_text_is_hallucination(
     # Chỉ lọc đoạn rất thưa — không coi tiếng Anh dài là ảo giác.
     if duration >= 30.0 and word_count <= 2:
         return True
-    if word_count >= 6 and duration >= 12.0:
+    # Whisper hay trả «v v c s M b m kh…» (mất nguyên âm) trên TTS Adam/VI
+    letters = re.findall(r"[A-Za-zÀ-ỹ]", compact)
+    if len(letters) >= 20:
+        vowel_set = set("aeiouyăâêôơưáàảãạéèẻẽẹíìỉĩịóòỏõọúùủũụýỳỷỹỵốồổỗộớờởỡợứừửữựếềểễệ")
+        vowels = sum(1 for c in letters if c.lower() in vowel_set)
+        if vowels / len(letters) < 0.28:
+            return True
+    if word_count >= 6 and duration >= 6.0:
         tiny = sum(1 for w in words if len(w) <= 2)
-        if tiny / word_count > 0.72:
+        if tiny / word_count > 0.65:
             return True
     return False
+
+
+def cues_from_script_text(
+    text: str,
+    duration: float,
+) -> list[tuple[float, float, str]]:
+    """SRT từ script TTS đã biết — tránh Whisper ảo giác trên giọng Adam/VI."""
+    text = unicodedata.normalize("NFC", (text or "").strip())
+    duration = max(0.5, float(duration or 0))
+    if not text:
+        return []
+    parts = [p.strip() for p in re.split(r"(?<=[.!?…])\s+", text) if p.strip()]
+    if not parts:
+        parts = [text]
+    weights = [max(1, len(p)) for p in parts]
+    total_w = float(sum(weights))
+    cues: list[tuple[float, float, str]] = []
+    t = 0.0
+    for i, (part, w) in enumerate(zip(parts, weights)):
+        if i == len(parts) - 1:
+            end = duration
+        else:
+            end = min(duration, t + duration * (w / total_w))
+        end = max(t + 0.25, end)
+        cues.append((t, end, part))
+        t = end
+    if cues:
+        s0, _, tx = cues[-1]
+        cues[-1] = (s0, duration, tx)
+    return cues
 
 
 def _groq_prompt_from_cues(cues: list[tuple[float, float, str]]) -> str:

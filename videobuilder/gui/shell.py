@@ -104,12 +104,12 @@ class ShellMixin:
                 self.srt_create_btn.pack(side=tk.LEFT)
             elif mode == "image":
                 self.img_create_btn.pack(side=tk.LEFT)
-            elif mode == "auto":
+            elif mode in ("auto", "tts"):
                 pass
             else:
                 self.render_btn.pack(side=tk.LEFT)
 
-            if mode != "auto" and mode != "image":
+            if mode not in ("auto", "image", "tts"):
                 self.preview_btn.pack(side=tk.LEFT, padx=(8, 0))
             self.pause_btn.pack(side=tk.LEFT, padx=(8, 0))
             self.cancel_btn.pack(side=tk.LEFT, padx=(4, 0))
@@ -128,6 +128,10 @@ class ShellMixin:
                         self._update_srt_controls_locked()
                     elif mode == "auto":
                         self.after(0, self._update_srt_open_buttons)
+            elif mode == "tts":
+                self.open_video_btn.configure(text="Mở audio", command=self._open_tts_audio)
+                path = (getattr(self, "last_tts_output", None) or self.tts_output_var.get() or "").strip()
+                self._set_open_buttons(bool(path and Path(path).is_file()))
             else:
                 self.open_video_btn.configure(text="Mở video", command=self._open_video)
                 enabled = bool(self.last_output and Path(self.last_output).is_file())
@@ -147,7 +151,7 @@ class ShellMixin:
                 panel.pack_forget()
             self._tab_panels[key].pack(fill=tk.BOTH, expand=True)
             self._render_footer.pack(side=tk.BOTTOM, fill=tk.X)
-            if key in ("srt", "auto", "image"):
+            if key in ("srt", "auto", "image", "tts"):
                 self._apply_footer_mode(key)
                 if key == "srt":
                     self.after(1, self._schedule_srt_tab_refresh)
@@ -155,6 +159,8 @@ class ShellMixin:
                     self.after(0, self._on_auto_tab_shown)
                 elif key == "image":
                     self._refresh_img_engine_status()
+                elif key == "tts":
+                    self._refresh_tts_status()
             elif key == "api":
                 self._apply_footer_mode("render")
                 self._refresh_api_tab_status()
@@ -400,6 +406,7 @@ class ShellMixin:
             tab_opts_shell = shells["opts"]
             tab_auto_shell = shells["auto"]
             tab_srt_shell = shells["srt"]
+            tab_tts_shell = shells["tts"]
             tab_image_shell = shells["image"]
             tab_api_shell = shells["api"]
             tab_contact_shell = shells["contact"]
@@ -410,6 +417,9 @@ class ShellMixin:
             tab_auto = ttk.Frame(tab_auto_scroll, style="Card.TFrame", padding=(14, 10))
             tab_auto.pack(fill=tk.BOTH, expand=True, anchor="nw")
             tab_srt = self._build_scroll_area(tab_srt_shell)
+            tab_tts_scroll = self._build_scroll_area(tab_tts_shell)
+            tab_tts = ttk.Frame(tab_tts_scroll, style="Card.TFrame", padding=(14, 10))
+            tab_tts.pack(fill=tk.BOTH, expand=True, anchor="nw")
             tab_image_scroll = self._build_scroll_area(tab_image_shell)
             tab_image = ttk.Frame(tab_image_scroll, style="Card.TFrame", padding=(14, 10))
             tab_image.pack(fill=tk.BOTH, expand=True, anchor="nw")
@@ -422,6 +432,7 @@ class ShellMixin:
             self._build_contact_tab(tab_contact)
             self._build_auto_tab(tab_auto)
             self._build_srt_tab(tab_srt)
+            self._build_tts_tab(tab_tts)
             self._build_image_tab(tab_image)
             self._build_api_tab(tab_api)
             self._sync_srt_model_hint()

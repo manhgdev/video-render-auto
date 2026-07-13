@@ -152,6 +152,24 @@ def test_groq_text_is_hallucination():
         "Hãy subscribe cho kênh Ghiền Mì Gõ",
         duration=5.0,
     )
+    # Cue Adam/VI bị mất nguyên âm (~10s) — trước đây lọt vì duration < 12
+    garbled = (
+        "v v v c s M b m kh l vi s d nh c chuy th tho gi th nh hi t t nhi "
+        "Nh c chuy v c v th v nh con qu v"
+    )
+    assert _groq_text_is_hallucination(garbled, duration=10.75, strict=True)
+
+
+def test_cues_from_script_text_covers_duration():
+    from videobuilder.core.create_srt import cues_from_script_text
+
+    text = "Câu một đây. Câu hai tiếp theo. Câu ba kết thúc."
+    cues = cues_from_script_text(text, 30.0)
+    assert len(cues) == 3
+    assert cues[0][0] == 0.0
+    assert abs(cues[-1][1] - 30.0) < 0.01
+    assert "Câu một" in cues[0][2]
+    assert all(c[1] > c[0] for c in cues)
 
 
 def test_groq_response_language_from_verbose_json():

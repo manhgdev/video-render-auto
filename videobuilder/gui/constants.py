@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 from pathlib import Path
 
-from videobuilder.core.env_config import GEMINI_API_KEY_ENV
+from videobuilder.core.env_config import ELEVENLABS_API_KEY_ENV, GEMINI_API_KEY_ENV
 from videobuilder.core.pipeline import ENCODE_QUALITY_OPTIONS, TRANSITION_EFFECTS, ZOOM_LEVEL_OPTIONS, ENCODER_OVERRIDE_OPTIONS
 
 OUTPUT_BASENAME = "output.mp4"
@@ -71,10 +71,11 @@ SRT_FIELD_LABEL_WIDTH = 13
 TAB_ITEMS = (
     ("files", "Dự án"),
     ("opts", "Cài đặt"),
-    ("auto", "Tự động"),
     ("srt", "Tạo SRT"),
+    ("tts", "Tạo audio"),
     ("image", "Tạo ảnh"),
     ("api", "API key"),
+    ("auto", "Tự động"),
     ("contact", "Liên hệ"),
 )
 
@@ -350,22 +351,66 @@ FIELD_HELP = {
         "• Phụ đề lỗi / 429 / không có → Groq nhận dạng audio\n\n"
         "Cần FFmpeg + Groq API. Lần đầu có thể tự cài yt-dlp.",
     ),
+    "auto_duration": (
+        "Độ dài video",
+        "Ép độ dài script → audio → SRT → ảnh → video khớp nhau.\n\n"
+        "• Dài (7–12 phút) — video kể chuyện đầy đủ\n"
+        "• Short 6 giây — ~20–35 từ, 2–3 ảnh\n"
+        "• Short 10 giây — ~35–55 từ, vài ảnh hook\n\n"
+        "Video cuối = độ dài audio. Muốn short thì chọn ở đây "
+        "(không chỉ Preview cắt đầu).",
+    ),
+    "tts_text": (
+        "Văn bản TTS",
+        "Nội dung đọc thành audio.\n\n"
+        "• Dán script hoặc gõ trực tiếp\n"
+        "• Xuất .mp3 — dùng tiếp ở tab Dự án / Tạo SRT\n"
+        "• ElevenLabs cần ELEVENLABS_API_KEY; macOS say không cần key",
+    ),
+    "tts_output": (
+        "File audio xuất",
+        "Đường dẫn file .mp3 sau khi tạo giọng.\n\n"
+        "• Mặc định: audio_adam.mp3 hoặc audio_say.mp3\n"
+        "• «Dùng cho Dự án» — gán vào ô File audio tab Dự án",
+    ),
+    "tts_engine": (
+        "Engine TTS",
+        "• ElevenLabs Adam — cloud (cần API key)\n"
+        "• macOS say — local miễn phí, chỉ macOS",
+    ),
+    "tts_voice": (
+        "Giọng",
+        "Giọng theo engine đang chọn.\n\n"
+        "ElevenLabs:\n"
+        "• pNInz6obpgDQGcFmaJgB — Adam\n"
+        "• EXAVITQu4vr4xnSDxMaL — Sarah\n"
+        "• VR6AewLTigWG4xSOukaG — Arnold\n\n"
+        "macOS say: danh sách từ `say -v ?` (mặc định Linh / vi_VN).",
+    ),
+    "tts_enhance": (
+        "Cảm xúc",
+        "Bật style / speaker boost ElevenLabs (giống Studio Adam).\n\n"
+        "Chỉ áp dụng khi engine = ElevenLabs.\n"
+        "Tắt = đọc ổn định hơn; Bật = nhấn cảm xúc hơn.",
+    ),
+    "api_elevenlabs": (
+        "ElevenLabs API key",
+        f"Key TTS Adam ({ELEVENLABS_API_KEY_ENV}).\n\n"
+        "• Nhiều key: cách nhau bởi dấu phẩy\n"
+        "• Dùng cho tab Tạo audio và pipeline Tự động",
+    ),
     "auto_voice": (
         "Giọng đọc",
-        "Giọng Edge TTS (Microsoft) khi tạo audio từ script.\n\n"
-        "• vi-VN-HoaiMyNeural (hay nhất)\n"
-        "• vi-VN-AnNgocNeural (Ngọc Huyền)\n"
-        "• vi-VN-KimNganNeural (cô bé hoạt ngôn, trẻ trung)\n"
-        "• en-US-AdamNeural (nam Mỹ rất hay)\n\n"
-        "Tất cả đều miễn phí. Chọn giọng rồi bấm Tạo Video.",
+        "Giọng ElevenLabs khi tạo audio từ script (mặc định Adam).\n\n"
+        "• pNInz6obpgDQGcFmaJgB — Adam (mặc định)\n"
+        "• EXAVITQu4vr4xnSDxMaL — Sarah\n"
+        "• VR6AewLTigWG4xSOukaG — Arnold\n\n"
+        f"Cần {ELEVENLABS_API_KEY_ENV} trong .env. SRT vẫn tạo bằng Groq sau TTS.",
     ),
     "auto_rate": (
         "Tốc độ TTS",
-        "Tốc độ đọc so với mặc định.\n\n"
-        "• +0% — bình thường\n"
-        "• +10% — nhanh hơn\n"
-        "• -10% — chậm hơn\n\n"
-        "Ví dụ: +0%, +15%, -5%",
+        "Giữ tương thích UI — ElevenLabs không dùng tốc độ Edge.\n\n"
+        "Để +0% là đủ.",
     ),
     "auto_seed": (
         "Ý tưởng / chủ đề",

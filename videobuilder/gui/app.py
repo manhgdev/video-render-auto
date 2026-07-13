@@ -7,7 +7,17 @@ from videobuilder.core.env_config import load_env
 from videobuilder.core.ffmpeg_setup import ensure_ffmpeg_on_path
 from videobuilder.core.pipeline import DEFAULT_PREVIEW_SECONDS, ENCODE_QUALITY_OPTIONS, ENCODER_OVERRIDE_OPTIONS, ZOOM_LEVEL_OPTIONS
 from videobuilder.core.create_srt import DEFAULT_LANGUAGE, DEFAULT_MODEL, DEFAULT_SRT_SPLIT, SRT_SPLIT_KEY_TO_LABEL
-from videobuilder.core.automation import DEFAULT_TTS_RATE, DEFAULT_TTS_VOICE, automation_prompt_path_hint, warmup_auto_defaults
+from videobuilder.core.automation import (
+    DEFAULT_AUTO_DURATION,
+    AUTO_DURATION_KEY_TO_LABEL,
+    DEFAULT_MACOS_SAY_VOICE,
+    DEFAULT_TTS_ENGINE,
+    DEFAULT_TTS_RATE,
+    DEFAULT_TTS_VOICE,
+    automation_prompt_path_hint,
+    warmup_auto_defaults,
+)
+
 from videobuilder.gui.constants import (
     C,
     EFFECT_KEY_TO_LABEL,
@@ -24,6 +34,7 @@ from videobuilder.gui.project_tab import ProjectTabMixin
 from videobuilder.gui.render_tab import RenderTabMixin
 from videobuilder.gui.shell import ShellMixin
 from videobuilder.gui.srt_tab import SrtTabMixin
+from videobuilder.gui.tts_tab import TtsTabMixin
 from videobuilder.gui.widgets import WidgetMixin
 from videobuilder.gui.progress import (
     CanvasProgressBar,
@@ -44,14 +55,20 @@ class VideoBuilderApp(
     ApiTabMixin,
     AutoTabMixin,
     SrtTabMixin,
+    TtsTabMixin,
     ImageTabMixin,
     RenderTabMixin,
 ):
         def __init__(self):
             super().__init__()
             self.title(window_title())
-            self.geometry("1040x720")
-            self.minsize(720, 520)
+            # Mặc định lớn hơn 1040×720 — bớt scroll trong tab; vẫn fit màn hình.
+            sw = max(self.winfo_screenwidth(), 1040)
+            sh = max(self.winfo_screenheight(), 720)
+            w = min(1280, max(1100, int(sw * 0.78)))
+            h = min(980, max(820, int(sh * 0.82)))
+            self.geometry(f"{w}x{h}")
+            self.minsize(900, 640)
             self.configure(bg=C["bg"])
 
             load_env()
@@ -99,8 +116,18 @@ class VideoBuilderApp(
             self.srt_output_name_var = tk.StringVar(value="subtitle")
             self.groq_api_key_var = tk.StringVar()
             self.gemini_api_key_var = tk.StringVar()
+            self.elevenlabs_api_key_var = tk.StringVar()
             self.groq_api_status_var = tk.StringVar(value="Đang kiểm tra Groq...")
             self.gemini_api_status_var = tk.StringVar(value="Đang kiểm tra Gemini...")
+            self.elevenlabs_api_status_var = tk.StringVar(value="Đang kiểm tra ElevenLabs...")
+            self.tts_output_var = tk.StringVar()
+            self.tts_engine_var = tk.StringVar(value=DEFAULT_TTS_ENGINE)
+            self.tts_voice_var = tk.StringVar(value=DEFAULT_TTS_VOICE)
+            self.tts_say_voice_var = tk.StringVar(value=DEFAULT_MACOS_SAY_VOICE)
+            self.tts_enhance_var = tk.BooleanVar(value=False)
+            self.tts_status_var = tk.StringVar(value="Đang kiểm tra TTS...")
+            self.tts_running = False
+            self.last_tts_output = None
             self.srt_prompts_output_var = tk.StringVar()
             self.srt_prompts_output_dir_var = tk.StringVar()
             self.srt_prompts_output_name_var = tk.StringVar(value="subtitle")
@@ -116,6 +143,9 @@ class VideoBuilderApp(
             self.auto_script_var = tk.StringVar()
             self.auto_voice_var = tk.StringVar(value=DEFAULT_TTS_VOICE)
             self.auto_rate_var = tk.StringVar(value=DEFAULT_TTS_RATE)
+            self.auto_duration_var = tk.StringVar(
+                value=AUTO_DURATION_KEY_TO_LABEL[DEFAULT_AUTO_DURATION],
+            )
             self.auto_topic_history = []
             self.img_prompts_var = tk.StringVar()
             self.img_output_dir_var = tk.StringVar()

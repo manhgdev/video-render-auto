@@ -9,6 +9,7 @@ from pathlib import Path
 
 GROQ_API_KEY_ENV = "GROQ_API_KEY"
 GEMINI_API_KEY_ENV = "GEMINI_API_KEY"
+ELEVENLABS_API_KEY_ENV = "ELEVENLABS_API_KEY"
 
 _loaded = False
 

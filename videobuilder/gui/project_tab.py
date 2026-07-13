@@ -12,6 +12,7 @@ from pathlib import Path
 import tkinter as tk
 from tkinter import filedialog, ttk
 
+from videobuilder.core.automation import AUTO_DURATION_KEY_TO_LABEL, normalize_auto_duration
 from videobuilder.core.create_srt import SRT_SPLIT_KEY_TO_LABEL, normalize_srt_split
 from videobuilder.core.ffmpeg_setup import check_ffmpeg, ensure_ffmpeg_on_path
 from videobuilder.core.pipeline import DEFAULT_2D_TRANSITION_DURATION, get_media_duration
@@ -469,6 +470,12 @@ class ProjectTabMixin:
                 "preview": self.preview_var.get(),
                 "groq_api_key": self.groq_api_key_var.get(),
                 "gemini_api_key": self.gemini_api_key_var.get(),
+                "elevenlabs_api_key": self.elevenlabs_api_key_var.get(),
+                "tts_output": self.tts_output_var.get(),
+                "tts_engine": self.tts_engine_var.get(),
+                "tts_voice": self.tts_voice_var.get(),
+                "tts_say_voice": self.tts_say_voice_var.get(),
+                "tts_enhance": self.tts_enhance_var.get(),
                 "srt_prompts_output": self.srt_prompts_output_var.get(),
                 "srt_gen_prompts": self.srt_gen_prompts_var.get(),
                 "srt_audio": self.srt_audio_var.get(),
@@ -483,6 +490,7 @@ class ProjectTabMixin:
                 "auto_script": self.auto_script_var.get(),
                 "auto_voice": self.auto_voice_var.get(),
                 "auto_rate": self.auto_rate_var.get(),
+                "auto_duration": normalize_auto_duration(self.auto_duration_var.get()),
                 "auto_topic_history": getattr(self, "auto_topic_history", []),
                 "img_prompts": self.img_prompts_var.get(),
                 "img_output_dir": self.img_output_dir_var.get(),
@@ -523,6 +531,11 @@ class ProjectTabMixin:
                 "preview": self.preview_var,
                 "groq_api_key": self.groq_api_key_var,
                 "gemini_api_key": self.gemini_api_key_var,
+                "elevenlabs_api_key": self.elevenlabs_api_key_var,
+                "tts_output": self.tts_output_var,
+                "tts_engine": self.tts_engine_var,
+                "tts_voice": self.tts_voice_var,
+                "tts_say_voice": self.tts_say_voice_var,
                 "srt_prompts_output": self.srt_prompts_output_var,
                 "srt_gen_prompts": self.srt_gen_prompts_var,
                 "srt_audio": self.srt_audio_var,
@@ -537,6 +550,7 @@ class ProjectTabMixin:
                 "auto_script": self.auto_script_var,
                 "auto_voice": self.auto_voice_var,
                 "auto_rate": self.auto_rate_var,
+                "auto_duration": self.auto_duration_var,
                 "img_prompts": self.img_prompts_var,
                 "img_output_dir": self.img_output_dir_var,
                 "img_aspect": self.img_aspect_var,
@@ -553,10 +567,15 @@ class ProjectTabMixin:
                 elif key == "srt_split":
                     split_key = normalize_srt_split(str(data[key]))
                     var.set(SRT_SPLIT_KEY_TO_LABEL.get(split_key, SRT_SPLIT_KEY_TO_LABEL["normal"]))
+                elif key == "auto_duration":
+                    dur_key = normalize_auto_duration(str(data[key]))
+                    var.set(AUTO_DURATION_KEY_TO_LABEL.get(dur_key, AUTO_DURATION_KEY_TO_LABEL["full"]))
                 elif key == "srt_gen_prompts":
                     self.srt_gen_prompts_var.set(bool(data[key]))
                 elif key == "img_skip_existing":
                     self.img_skip_existing_var.set(bool(data[key]))
+                elif key == "tts_enhance":
+                    self.tts_enhance_var.set(bool(data[key]))
                 else:
                     var.set(data[key])
             if not self.groq_api_key_var.get().strip():

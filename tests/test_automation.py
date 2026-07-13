@@ -67,14 +67,71 @@ def test_auto_packages_status_fast(monkeypatch):
         "videobuilder.core.create_srt.groq_api_key",
         lambda: "key",
     )
+    monkeypatch.setattr(
+        "videobuilder.core.automation.elevenlabs_api_keys",
+        lambda: [],
+    )
     invalidate_auto_packages_cache()
     status = auto_packages_status(force=True)
     assert status["groq_ok"] is True
-    assert status["edge_tts_ok"] is False
+    assert status["elevenlabs_key"] is False
     assert status["needs_install"] is True
-    assert "edge-tts" in status["missing"]
+    assert "yt-dlp" in status["missing"]
     assert status["ready_for_topics"] is True
     assert status["ready_for_pipeline"] is False
+
+
+def test_split_text_for_tts_chunks():
+    from videobuilder.core.automation import _split_text_for_tts
+
+    short = "Xin chào."
+    assert _split_text_for_tts(short, max_chars=100) == [short]
+    long = ("Câu một. " * 50) + ("Câu hai. " * 50)
+    parts = _split_text_for_tts(long, max_chars=80)
+    assert len(parts) >= 2
+    assert all(len(p) <= 80 for p in parts)
+    assert "Câu một" in parts[0]
+    assert sum(len(p) for p in parts) >= len(long) - len(parts)  # strip mất khoảng trắng biên
+
+def test_normalize_auto_duration():
+    from videobuilder.core.automation import normalize_auto_duration
+
+    assert normalize_auto_duration("6") == "6"
+    assert normalize_auto_duration("Short 10 giây") == "10"
+    assert normalize_auto_duration("Dài (7–12 phút)") == "full"
+    assert normalize_auto_duration("") == "full"
+
+
+def test_macos_say_voice_list_or_unavailable():
+    from videobuilder.core.automation import list_macos_say_voice_names, macos_say_available
+
+    if macos_say_available():
+        names = list_macos_say_voice_names()
+        assert names
+        assert "Linh" in names or any("Linh" in n for n in names)
+    else:
+        assert list_macos_say_voice_names() == []
+
+
+def test_synthesize_text_macos_say_smoke(tmp_path: Path):
+    import sys
+
+    from videobuilder.core.automation import (
+        AutomationError,
+        macos_say_available,
+        synthesize_text_macos_say,
+    )
+
+    out = tmp_path / "say_smoke.mp3"
+    if not macos_say_available():
+        with pytest.raises(AutomationError, match="macOS"):
+            synthesize_text_macos_say("hello", out)
+        return
+    if sys.platform != "darwin":
+        return
+    path = synthesize_text_macos_say("Xin chào.", out, voice="Linh")
+    assert path.is_file()
+    assert path.stat().st_size > 500
 
 
 def test_discover_existing_topic_hints_from_project_dirs(tmp_path: Path):

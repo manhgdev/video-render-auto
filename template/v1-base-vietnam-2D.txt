@@ -43,7 +43,7 @@ GIAI ĐOẠN 2: VIẾT KỊCH BẢN
 Khi người dùng chọn chủ đề hoặc đưa chủ đề trực tiếp, hãy viết kịch bản hoàn chỉnh.
 
 Yêu cầu kịch bản:
-- Độ dài mặc định: 7-12 phút.
+- Độ dài mặc định: 8-15 phút.
 - Văn phong: kể chuyện giáo dục, dễ hiểu, cuốn hút, có hook mạnh.
 - Nếu là ngách người cổ đại: dùng ngôi thứ hai “bạn”, đưa người xem vào tình huống.
 - Mở đầu phải có hook trong 5-10 giây đầu.
@@ -101,14 +101,14 @@ Khi chia visual beat:
 GIAI ĐOẠN 6: TẠO PROMPT ẢNH
 Mỗi prompt phải viết đúng format sau:
 
-001_[00.00.00.00-00.00.05.00] CHARACTER BIBLE: [mô tả nhân vật cố định]. Câu audio bám sát: "[câu audio hoặc cụm câu audio]". Ý cảnh: [ý nghĩa chính cần truyền tải]. Góc máy: [góc nhìn phù hợp]. Bối cảnh: [không gian, thời gian, môi trường]. Hình ảnh cần thể hiện: [mô tả cụ thể hành động, cảm xúc, biểu tượng trực quan, vật thể chính, yếu tố giúp hiểu đúng câu audio]. Điểm nối chuyển cảnh: [chi tiết giúp ảnh này nối mượt sang ảnh kế tiếp bằng cùng nhân vật, cùng bối cảnh, cùng vật thể, cùng hướng nhìn hoặc hành động tiếp diễn]. Nhãn trong ảnh: [ghi rõ có chữ hay không, nếu có thì chữ gì]. Phong cách: [style cố định].
+001_[00:00.000-00:05.000] CHARACTER BIBLE: [mô tả nhân vật cố định]. Câu audio bám sát: "[câu audio hoặc cụm câu audio]". Ý cảnh: [ý nghĩa chính cần truyền tải]. Góc máy: [góc nhìn phù hợp]. Bối cảnh: [không gian, thời gian, môi trường]. Hình ảnh cần thể hiện: [mô tả cụ thể hành động, cảm xúc, biểu tượng trực quan, vật thể chính, yếu tố giúp hiểu đúng câu audio]. Điểm nối chuyển cảnh: [chi tiết giúp ảnh này nối mượt sang ảnh kế tiếp bằng cùng nhân vật, cùng bối cảnh, cùng vật thể, cùng hướng nhìn hoặc hành động tiếp diễn]. Nhãn trong ảnh: [ghi rõ có chữ hay không, nếu có thì chữ gì]. Phong cách: [style cố định].
 
 QUY TẮC FORMAT PROMPT:
 - Mỗi prompt là một dòng duy nhất.
 - Không xuống dòng bên trong prompt.
 - Giữa hai prompt chỉ có đúng một dòng trống.
 - Đánh số thứ tự 001, 002, 003...
-- Timecode dạng: [00.00.00.00-00.00.05.00]
+- Timecode dạng: [00:00.000-00:05.000]
 - Câu audio phải đặt trong ngoặc kép.
 - Không bỏ CHARACTER BIBLE nếu cần giữ nhân vật đồng nhất.
 - Không thêm giải thích chen giữa các prompt.

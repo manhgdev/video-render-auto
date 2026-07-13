@@ -13,6 +13,8 @@ from videobuilder.core.pipeline import ProcessController
 from videobuilder.core.progress import reset_progress_floor
 from videobuilder.core.automation import (
     AutomationError,
+    AUTO_DURATION_OPTIONS,
+    DEFAULT_AUTO_DURATION,
     DEFAULT_TTS_RATE,
     DEFAULT_TTS_VOICE,
     TTS_VOICE_OPTIONS,
@@ -22,9 +24,11 @@ from videobuilder.core.automation import (
     automation_prompt_path_hint,
     ensure_default_automation_prompt,
     install_auto_packages,
+    normalize_auto_duration,
     run_full_auto_pipeline,
     suggest_topics,
 )
+from videobuilder.core.env_config import ELEVENLABS_API_KEY_ENV
 from videobuilder.core.ffmpeg_setup import is_frozen_app
 from videobuilder.core.youtube_import import analyze_youtube_to_prompts
 from videobuilder.gui.constants import C
@@ -140,14 +144,14 @@ class AutoTabMixin:
             if path_warning:
                 return path_warning
             if status["ready_for_pipeline"]:
-                return "Sẵn sàng · groq · edge-tts · yt-dlp"
+                return "Sẵn sàng · groq · ElevenLabs · yt-dlp"
             parts: list[str] = []
             if not status["groq_key"]:
                 parts.append("Thiếu Groq API key (tab API key)")
+            if not status.get("elevenlabs_key"):
+                parts.append(f"thiếu {ELEVENLABS_API_KEY_ENV} (.env)")
             if not status["groq_ok"]:
                 parts.append("thiếu groq")
-            if not status["edge_tts_ok"]:
-                parts.append("thiếu edge-tts (TTS)")
             if not status["yt_dlp_ok"]:
                 parts.append("thiếu yt-dlp (YouTube)")
             if status["needs_install"]:
@@ -202,7 +206,8 @@ class AutoTabMixin:
             if is_frozen_app():
                 self._show_warning(
                     "Cài đặt",
-                    "Bản .exe không cài pip được.\nChạy: pip install groq edge-tts yt-dlp\nhoặc dùng bản exe build mới.",
+                    "Bản .exe không cài pip được.\nChạy: pip install groq yt-dlp\n"
+                    f"và thêm {ELEVENLABS_API_KEY_ENV} vào .env\nhoặc dùng bản exe build mới.",
                 )
                 return
             status = auto_packages_status()
@@ -229,7 +234,7 @@ class AutoTabMixin:
                     if err_msg:
                         self._show_error("Cài đặt", err_msg)
                     else:
-                        self._show_info("Xong", "Đã cài gói tab Tự động (groq, edge-tts, yt-dlp).")
+                        self._show_info("Xong", "Đã cài gói tab Tự động (groq, yt-dlp).")
                         self._log("Đã cài gói tab Tự động.", "success")
 
                 self._run_on_ui_thread(done)
@@ -250,8 +255,11 @@ class AutoTabMixin:
             if not self._auto_require_topics():
                 return False
             status = auto_packages_status()
-            if not status["edge_tts_ok"]:
-                self._show_warning("Tự động", "Thiếu edge-tts (TTS) — bấm «Cài đặt».")
+            if not status.get("elevenlabs_key"):
+                self._show_warning(
+                    "Tự động",
+                    f"Thiếu {ELEVENLABS_API_KEY_ENV} trong .env (TTS Adam / ElevenLabs).",
+                )
                 return False
             return True
 
@@ -564,6 +572,7 @@ class AutoTabMixin:
                     output_dir,
                     voice=self.auto_voice_var.get().strip() or DEFAULT_TTS_VOICE,
                     rate=self.auto_rate_var.get().strip() or DEFAULT_TTS_RATE,
+                    target_duration=normalize_auto_duration(self.auto_duration_var.get()),
                     progress_callback=self._set_auto_progress,
                     log_callback=self._log,
                     process_controller=self.process_controller,
@@ -694,12 +703,21 @@ class AutoTabMixin:
                 values=TTS_VOICE_OPTIONS,
                 state="normal",
                 height=12,
-                width=28,
+                width=22,
             ).grid(row=0, column=1, sticky="ew", padx=(0, 8))
+            dur_label = self._muted_label_with_help(voice_row, "Độ dài", help_key="auto_duration")
+            dur_label.grid(row=0, column=2, sticky="w", padx=(0, 4))
+            ttk.Combobox(
+                voice_row,
+                textvariable=self.auto_duration_var,
+                values=[label for _, label in AUTO_DURATION_OPTIONS],
+                state="readonly",
+                width=16,
+            ).grid(row=0, column=3, sticky="e", padx=(0, 8))
             rate_label = self._muted_label_with_help(voice_row, "Tốc độ", help_key="auto_rate")
-            rate_label.grid(row=0, column=2, sticky="w", padx=(0, 4))
+            rate_label.grid(row=0, column=4, sticky="w", padx=(0, 4))
             ttk.Entry(voice_row, textvariable=self.auto_rate_var, width=6).grid(
-                row=0, column=3, sticky="e",
+                row=0, column=5, sticky="e",
             )
 
             seed_label = self._muted_label_with_help(

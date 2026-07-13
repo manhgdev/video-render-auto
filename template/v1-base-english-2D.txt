@@ -106,14 +106,14 @@ HOOK IMAGE RULE:
 STAGE 6: IMAGE PROMPT RENDERING
 Every prompt must follow this exact format:
 
-001_[00.00.00.00-00.00.05.00] CHARACTER BIBLE: [fixed character description]. Audio line: "[spoken audio line or grouped spoken lines]". Visual meaning: [main idea that must be understood]. Camera angle: [suitable viewpoint]. Setting: [place, time, environment]. Image must show: [specific action, emotion, visual symbols, main objects, and elements that make the audio idea clear]. Transition connection: [detail that helps this image connect smoothly to the next image through same character, same location, same object, same eye-line, or continuing action]. On-image label: [state whether there is text, and if yes, exactly what it says]. Style: [fixed visual style].
+001_[00:00.000-00:05.000] CHARACTER BIBLE: [fixed character description]. Audio line: "[spoken audio line or grouped spoken lines]". Visual meaning: [main idea that must be understood]. Camera angle: [suitable viewpoint]. Setting: [place, time, environment]. Image must show: [specific action, emotion, visual symbols, main objects, and elements that make the audio idea clear]. Transition connection: [detail that helps this image connect smoothly to the next image through same character, same location, same object, same eye-line, or continuing action]. On-image label: [state whether there is text, and if yes, exactly what it says]. Style: [fixed visual style].
 
 IMAGE PROMPT FORMAT RULES:
 - Each prompt must be exactly one single line.
 - Do not insert line breaks inside a prompt.
 - Use exactly one blank line between prompts.
 - Number prompts as 001, 002, 003...
-- Timecode format: [00.00.00.00-00.00.05.00]
+- Timecode format: [00:00.000-00:05.000]
 - Audio line must be inside quotation marks.
 - Do not remove CHARACTER BIBLE when character consistency matters.
 - Do not add explanation between prompts.
