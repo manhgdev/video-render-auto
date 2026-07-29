@@ -37,6 +37,12 @@ def is_frozen_app() -> bool:
 
 
 def get_tools_dir() -> Path:
+    # A fresh machine may launch the EXE from Program Files or another read-only
+    # folder. Runtime tools therefore belong in the current user's writable app
+    # data, not beside the executable.
+    if getattr(sys, "frozen", False) and sys.platform == "win32":
+        base = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
+        return base / "VideoBuilder" / "tools" / "ffmpeg"
     return get_app_dir() / "tools" / "ffmpeg"
 
 
@@ -335,11 +341,16 @@ def install_ffmpeg(progress_callback=None) -> dict:
         log(status["message"])
         return status
 
-    if _install_via_winget(log):
-        return check_ffmpeg()
-
-    if _install_portable(log):
-        return check_ffmpeg()
+    # Bản EXE ưu tiên portable: không cần winget, không bật UAC, không sửa hệ
+    # thống và hoạt động cả với tài khoản Windows thường.
+    installers = (
+        (_install_portable, _install_via_winget)
+        if is_frozen_app()
+        else (_install_via_winget, _install_portable)
+    )
+    for installer in installers:
+        if installer(log):
+            return check_ffmpeg()
 
     return {
         "ok": False,

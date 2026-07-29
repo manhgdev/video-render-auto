@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
+import sys
+import traceback
 import tkinter as tk
 
 from videobuilder.core.env_config import load_env
 from videobuilder.core.ffmpeg_setup import ensure_ffmpeg_on_path
+from videobuilder.core.diagnostics import diagnostics_file, write_diagnostic
 from videobuilder.core.pipeline import DEFAULT_PREVIEW_SECONDS, ENCODE_QUALITY_OPTIONS, ENCODER_OVERRIDE_OPTIONS, ZOOM_LEVEL_OPTIONS
 from videobuilder.core.create_srt import DEFAULT_LANGUAGE, DEFAULT_MODEL, DEFAULT_SRT_SPLIT, SRT_SPLIT_KEY_TO_LABEL
 from videobuilder.core.automation import (
@@ -59,6 +62,20 @@ class VideoBuilderApp(
     ImageTabMixin,
     RenderTabMixin,
 ):
+        def report_callback_exception(self, exc_type, exc_value, exc_traceback):
+            """Surface Tk callback failures in windowed EXEs instead of losing stderr."""
+            detail = "".join(traceback.format_exception(exc_type, exc_value, exc_traceback))
+            write_diagnostic(detail, "error")
+            if hasattr(self, "log_text"):
+                self._log(f"Lỗi giao diện: {exc_value}", "error")
+            try:
+                self._show_error(
+                    "Lỗi ứng dụng",
+                    f"{exc_value}\n\nChi tiết đã được ghi tại:\n{diagnostics_file()}",
+                )
+            except Exception:
+                pass
+
         def __init__(self):
             super().__init__()
             self.title(window_title())
@@ -211,6 +228,10 @@ class VideoBuilderApp(
             self._sync_output_display(from_output_var=True)
             self._sync_prompts_display(from_output_var=True)
             self._refresh_ffmpeg_status()
+            # Máy Windows mới không cần tự tìm/bấm nút cài. Cài nền bằng winget,
+            # rồi tự fallback sang FFmpeg portable trong LOCALAPPDATA.
+            if not self.ffmpeg_ok and sys.platform == "win32":
+                self.after(800, self._start_ffmpeg_install)
             self._sync_duration_from_audio()
             self.after(300, self._sync_duration_from_audio)
             self.after(500, warmup_auto_defaults)
@@ -222,8 +243,21 @@ class VideoBuilderApp(
 
 
 def main():
-    app = VideoBuilderApp()
-    app.mainloop()
+    try:
+        app = VideoBuilderApp()
+        app.mainloop()
+    except Exception:
+        detail = traceback.format_exc()
+        path = write_diagnostic(detail, "fatal")
+        if sys.platform == "win32":
+            try:
+                import ctypes
+
+                suffix = f"\n\nLog: {path}" if path else ""
+                ctypes.windll.user32.MessageBoxW(0, detail[-1800:] + suffix, "VideoBuilder - lỗi", 0x10)
+            except Exception:
+                pass
+        raise
 
 
 if __name__ == "__main__":

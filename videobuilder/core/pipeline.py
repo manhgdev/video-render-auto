@@ -269,36 +269,70 @@ def _wait_process(proc, process_controller=None):
                 process_controller.raise_if_cancelled()
 
 
-IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp"}
+IMAGE_EXTS = {
+    ".png", ".jpg", ".jpeg", ".jpe", ".jfif", ".jif", ".jfi", ".webp",
+    ".avif", ".heic", ".heif", ".bmp", ".gif", ".tif", ".tiff",
+    ".jp2", ".j2k", ".j2c", ".jpc", ".jpx", ".jxl",
+    ".ico", ".dds", ".pbm", ".pgm", ".ppm", ".pnm", ".tga",
+}
 _ENCODER_CACHE = None
 
 _EXPORT_IMAGE_DIR_PREFIXES = ("gemini-folder", "veo-folder")
 
 
 def is_valid_image_file(path: Path) -> bool:
-    """Ảnh thật (PNG/JPEG/WebP) — loại file .png giả/HTML từ bulk export lỗi."""
+    """Nhận ảnh theo chữ ký file, không phụ thuộc đuôi do trình tải đặt."""
     try:
         with Path(path).open("rb") as handle:
-            head = handle.read(16)
+            head = handle.read(32)
+            try:
+                handle.seek(-26, 2)
+                tail = handle.read(26)
+            except OSError:
+                tail = b""
     except OSError:
         return False
     if head.startswith(b"\x89PNG\r\n\x1a\n"):
         return True
     if head.startswith(b"\xff\xd8\xff"):
         return True
-    return head.startswith(b"RIFF") and len(head) >= 12 and head[8:12] == b"WEBP"
+    if head.startswith(b"RIFF") and len(head) >= 12 and head[8:12] == b"WEBP":
+        return True
+    if head.startswith((b"GIF87a", b"GIF89a", b"BM")):
+        return True
+    if head.startswith((b"II*\x00", b"MM\x00*")):
+        return True
+    if head.startswith((b"\x00\x00\x01\x00", b"DDS ")):
+        return True
+    # JPEG 2000 raw codestream/container.
+    if head.startswith((b"\xff\x4f\xff\x51", b"\x00\x00\x00\x0cjP  \r\n\x87\n")):
+        return True
+    # JPEG XL raw codestream/container.
+    if head.startswith((b"\xff\x0a", b"\x00\x00\x00\x0cJXL \r\n\x87\n")):
+        return True
+    # PBM/PGM/PPM (ASCII or binary Netpbm).
+    if len(head) >= 3 and head[:2] in {b"P1", b"P2", b"P3", b"P4", b"P5", b"P6"}:
+        if head[2:3] in b" \t\r\n":
+            return True
+    # TGA has no fixed header; the v2 footer is its reliable signature.
+    if tail.endswith(b"TRUEVISION-XFILE.\x00"):
+        return True
+    # ISO-BMFF images used by Chrome/Veo exports: AVIF and HEIC/HEIF.
+    return len(head) >= 12 and head[4:8] == b"ftyp" and head[8:12] in {
+        b"avif", b"avis", b"heic", b"heix", b"hevc", b"hevx", b"mif1", b"msf1",
+    }
 
 
 def _collect_image_files(images_dir: Path, *, recursive: bool = True) -> list[Path]:
     images_dir = Path(images_dir)
     files = [
         p for p in images_dir.iterdir()
-        if p.is_file() and p.suffix.lower() in IMAGE_EXTS
+        if p.is_file() and (p.suffix.lower() in IMAGE_EXTS or is_valid_image_file(p))
     ]
     if recursive and not files:
         files = [
             p for p in images_dir.rglob("*")
-            if p.is_file() and p.suffix.lower() in IMAGE_EXTS
+            if p.is_file() and (p.suffix.lower() in IMAGE_EXTS or is_valid_image_file(p))
         ]
     return files
 
@@ -351,7 +385,10 @@ def resolve_images_dir(path: str | Path, scenes=None) -> Path:
         # Folder cha không gom ảnh từ gemini-folder/veo-folder con — chúng là ứng viên riêng.
         recursive = not (folder == base and export_children)
         valid, total = count_valid_images(folder, recursive=recursive)
-        missing = len(find_missing_scene_images(scenes, folder)) if scenes else 0
+        if scenes and valid:
+            missing = len(find_missing_scene_images(scenes, folder))
+        else:
+            missing = len(scenes or ())
         return missing, total - valid, -valid
 
     best = base
@@ -1632,7 +1669,9 @@ def run(
         for line in stderr_lines[-25:]:
             log_msg(log_callback, line, "error")
         log_msg(log_callback, f"FFmpeg lỗi (mã {rc})", "error")
-        raise subprocess.CalledProcessError(rc, cmd)
+        raise subprocess.CalledProcessError(
+            rc, cmd, stderr="\n".join(stderr_lines),
+        )
 
 
 def parse_timeline_input(value: str):
@@ -1902,7 +1941,19 @@ def list_images(images_dir: Path):
                 f"Tải lại ảnh hoặc dùng thư mục veo-folder / ảnh .jpg thật.\n\n"
                 f"Thư mục:\n{images_dir.resolve()}"
             )
-        raise RuntimeError(f"Không tìm thấy ảnh trong thư mục: {images_dir}")
+        try:
+            all_files = [p for p in images_dir.rglob("*") if p.is_file()]
+            suffixes = sorted({p.suffix.lower() or "(không có đuôi)" for p in all_files})
+            detail = (
+                f"\nTìm thấy {len(all_files)} file; định dạng: {', '.join(suffixes[:12])}."
+                if all_files else "\nThư mục không có file nào."
+            )
+        except OSError:
+            detail = ""
+        raise RuntimeError(
+            f"Không tìm thấy ảnh đọc được trong thư mục: {images_dir}{detail}\n"
+            f"Hỗ trợ: {', '.join(sorted(IMAGE_EXTS))}"
+        )
     return images
 
 
@@ -2318,22 +2369,42 @@ def build_video(
     with tempfile.TemporaryDirectory() as tmp:
         workdir = Path(tmp)
 
-        if transition > 0:
-            build_video_with_transitions(
-                pairs, audio, output, workdir, fps, width, height,
-                zoom_level, transition, transition_type, progress_callback, encoder, encode_quality,
-                transition_seed, audio_volume, duration_limit, subtitle_path, watermark_path, watermark_opacity,
-                subtitle_style, log_callback, process_controller,
-            )
-            used = len(pairs)
-        else:
-            report_progress(progress_callback, 5, f"1 lần encode — {encoder_label}...")
-            used = build_fast_video(
-                pairs, audio, output, workdir, fps, width, height, zoom_level, encoder, encode_quality,
-                audio_volume, duration_limit, subtitle_path, watermark_path, watermark_opacity,
-                subtitle_style, progress_callback, encode_duration, log_callback, process_controller,
+        def render_once(active_encoder: str, active_label: str):
+            if transition > 0:
+                build_video_with_transitions(
+                    pairs, audio, output, workdir, fps, width, height,
+                    zoom_level, transition, transition_type, progress_callback,
+                    active_encoder, encode_quality, transition_seed, audio_volume,
+                    duration_limit, subtitle_path, watermark_path, watermark_opacity,
+                    subtitle_style, log_callback, process_controller,
+                )
+                return len(pairs)
+            report_progress(progress_callback, 5, f"1 lần encode — {active_label}...")
+            result = build_fast_video(
+                pairs, audio, output, workdir, fps, width, height, zoom_level,
+                active_encoder, encode_quality, audio_volume, duration_limit,
+                subtitle_path, watermark_path, watermark_opacity, subtitle_style,
+                progress_callback, encode_duration, log_callback, process_controller,
             )
             report_progress(progress_callback, PROGRESS_RENDER_MAX, "Render xong, hoàn tất...")
+            return result
+
+        try:
+            used = render_once(encoder, encoder_label)
+        except subprocess.CalledProcessError:
+            if encoder == "libx264":
+                raise
+            log_msg(
+                log_callback,
+                f"{encoder} không encode được trên máy này — tự chuyển sang CPU libx264.",
+                "warn",
+            )
+            try:
+                output.unlink(missing_ok=True)
+            except OSError:
+                pass
+            report_progress(progress_callback, 5, "GPU lỗi — đang thử lại bằng CPU...")
+            used = render_once("libx264", "CPU (dự phòng)")
 
     log_msg(log_callback, f"Done: {output}", "success")
     log_msg(log_callback, f"Used images/scenes: {used}")

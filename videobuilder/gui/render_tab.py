@@ -767,44 +767,53 @@ class RenderTabMixin:
             threading.Thread(target=worker, daemon=True).start()
 
         def _start_render(self):
-            if self.rendering:
-                return
-            if not check_ffmpeg()["ok"]:
-                self._show_warning("Thiếu FFmpeg", "Chưa có FFmpeg. Bấm «Cài FFmpeg» trên thanh cảnh báo.")
-                self._refresh_ffmpeg_status()
-                return
-            try:
-                options = self._validate(preview=False)
-            except MissingSceneImagesError as err:
-                if self._can_generate_missing_images() and self._ask_gen_missing_images(err):
-                    self._begin_render_with_missing_images(err, preview=False)
-                else:
-                    self._begin_render_skipping_missing_images(err, preview=False)
-                return
-            except ValueError as err:
-                self._show_validation_error(err)
-                return
-            self._run_build(options)
+            RenderTabMixin._start_render_request(self, preview=False)
 
         def _start_preview(self):
-            if self.rendering or self.srt_running:
+            RenderTabMixin._start_render_request(self, preview=True)
+
+        def _start_render_request(self, *, preview: bool):
+            action = "Preview" if preview else "Render"
+            if getattr(self, "ffmpeg_installing", False):
+                message = "Ứng dụng đang tự cài FFmpeg cho lần chạy đầu. Vui lòng chờ hoàn tất."
+                self._log(f"{action}: {message}", "warn")
+                self._show_info("Đang chuẩn bị máy", message)
                 return
-            if self._footer_mode == "srt":
+            if self.rendering or self.srt_running:
+                self._log(f"{action}: tác vụ khác đang chạy.", "warn")
+                return
+            self._log(f"Đã nhấn {action}.", "info")
+            if preview and self._footer_mode == "srt":
                 self._start_create_srt(preview=True)
                 return
-            if not check_ffmpeg()["ok"]:
-                self._show_warning("Thiếu FFmpeg", "Chưa có FFmpeg. Bấm «Cài FFmpeg» trên thanh cảnh báo.")
-                self._refresh_ffmpeg_status()
-                return
             try:
-                options = self._validate(preview=True)
+                if not check_ffmpeg()["ok"]:
+                    self._show_warning("Thiếu FFmpeg", "Chưa có FFmpeg. Bấm «Cài FFmpeg» trên thanh cảnh báo.")
+                    self._refresh_ffmpeg_status()
+                    return
+                options = self._validate(preview=preview)
             except MissingSceneImagesError as err:
                 if self._can_generate_missing_images() and self._ask_gen_missing_images(err):
-                    self._begin_render_with_missing_images(err, preview=True)
+                    self._begin_render_with_missing_images(err, preview=preview)
                 else:
-                    self._begin_render_skipping_missing_images(err, preview=True)
+                    self._begin_render_skipping_missing_images(err, preview=preview)
                 return
             except ValueError as err:
+                self._log(f"{action} chưa chạy: {err}", "error")
                 self._show_validation_error(err)
                 return
-            self._run_build(options)
+            except Exception as err:
+                self._log(f"Lỗi khi bắt đầu {action}: {err}", "error")
+                self._log(traceback.format_exc(), "error")
+                self._show_error("Lỗi ứng dụng", f"Không thể bắt đầu {action.lower()}:\n{err}")
+                return
+            try:
+                self._run_build(options)
+            except Exception as err:
+                self.rendering = False
+                self.render_paused = False
+                self.process_controller = None
+                self._set_rendering(False)
+                self._log(f"Lỗi khởi tạo {action}: {err}", "error")
+                self._log(traceback.format_exc(), "error")
+                self._show_error("Lỗi ứng dụng", f"Không thể khởi tạo {action.lower()}:\n{err}")

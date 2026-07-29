@@ -20,6 +20,33 @@ def test_is_valid_image_file_jpeg(tmp_path: Path):
     assert is_valid_image_file(bad) is False
 
 
+def test_list_images_accepts_jfif(tmp_path: Path):
+    jfif = tmp_path / "001_scene.jfif"
+    jfif.write_bytes(b"\xff\xd8\xff\xe0\x00\x10JFIF\x00" + b"\x00" * 20)
+    assert list_images(tmp_path) == [jfif]
+
+
+def test_list_images_accepts_more_raster_formats(tmp_path: Path):
+    (tmp_path / "001_icon.ico").write_bytes(b"\x00\x00\x01\x00" + b"\x00" * 28)
+    (tmp_path / "002_texture.dds").write_bytes(b"DDS " + b"\x00" * 28)
+    (tmp_path / "003_frame.ppm").write_bytes(b"P6\n1 1\n255\n\x00\x00\x00")
+    assert len(list_images(tmp_path)) == 3
+
+
+def test_collects_avif_and_image_with_wrong_or_missing_extension(tmp_path: Path):
+    avif_header = b"\x00\x00\x00\x18ftypavif" + b"\x00" * 12
+    (tmp_path / "001_scene.avif").write_bytes(avif_header)
+    (tmp_path / "002_download").write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 20)
+    (tmp_path / "notes.txt").write_text("not an image", encoding="utf-8")
+
+    assert [p.name for p in list_images(tmp_path)] == ["001_scene.avif", "002_download"]
+
+
+def test_resolve_empty_folder_with_scenes_does_not_crash_while_scoring(tmp_path: Path):
+    scenes = [(1, 0.0, 1.0)]
+    assert resolve_images_dir(tmp_path, scenes=scenes) == tmp_path.resolve()
+
+
 def test_list_images_rejects_fake_bulk_png(tmp_path: Path):
     folder = tmp_path / "gemini-folder-99"
     folder.mkdir()

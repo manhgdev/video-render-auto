@@ -16,6 +16,7 @@ from videobuilder.core.automation import AUTO_DURATION_KEY_TO_LABEL, normalize_a
 from videobuilder.core.create_srt import SRT_SPLIT_KEY_TO_LABEL, normalize_srt_split
 from videobuilder.core.ffmpeg_setup import check_ffmpeg, ensure_ffmpeg_on_path
 from videobuilder.core.pipeline import DEFAULT_2D_TRANSITION_DURATION, get_media_duration
+from videobuilder.core.diagnostics import write_diagnostic
 from videobuilder.gui.constants import (
     C,
     EFFECT_LABEL_TO_KEY,
@@ -115,6 +116,7 @@ class ProjectTabMixin:
             text = str(message).strip()
             if not text:
                 return
+            write_diagnostic(text, level)
             stamp = datetime.now().strftime("%H:%M:%S")
             line = f"[{stamp}] {text}\n"
             tag = level if level in ("info", "error", "warn", "success") else "info"
